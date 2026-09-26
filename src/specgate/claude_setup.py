@@ -231,6 +231,12 @@ def install_claude(
     previous_mcp = (previous or {}).get("mcp")
 
     source_files = _files(source)
+    mcp_record: dict[str, object] = {
+        "name": _NAME,
+        "url": url,
+        "catalog": str(user_catalog),
+        "created": False,
+    }
     manifest = {
         "version": 1,
         "owner": _NAME,
@@ -238,12 +244,7 @@ def install_claude(
         "hooks": owned,
         "settings": str(settings_path),
         "url": url,
-        "mcp": {
-            "name": _NAME,
-            "url": url,
-            "catalog": str(user_catalog),
-            "created": False,
-        },
+        "mcp": mcp_record,
     }
     skill_status: Literal["created", "unchanged"] = (
         "unchanged"
@@ -255,7 +256,7 @@ def install_claude(
     wrote_settings = False
     try:
         mcp_status = merge_json_mcp(user_catalog, url, include_type=True, token=token)
-        manifest["mcp"]["created"] = mcp_status == "created" or (
+        mcp_record["created"] = mcp_status == "created" or (
             isinstance(previous_mcp, dict) and previous_mcp.get("created") is True
         )
         _write_settings(settings_path, settings)

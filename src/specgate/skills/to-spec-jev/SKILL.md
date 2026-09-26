@@ -30,6 +30,11 @@ Present one consolidated review in the harness:
 - Rejection calls `spec_reject` with the artifact revision and reason. Continue
   with `grill-with-jev` to clarify scope; do not publish the rejected artifact.
 
+Close that review with a mermaid flowchart the person can read. Show each
+active decision and the behavior it produces. Node labels are short titles in
+the review's language. Keep the artifact revision inside the approval tool
+call. The message ends on the diagram.
+
 Publication uses only the tracker and credentials already authorized in the
 harness. Reuse the same idempotency key while reconciling an uncertain result.
 Never create a second artifact or tracker item for the same intent and revision.

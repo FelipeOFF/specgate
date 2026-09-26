@@ -27,13 +27,29 @@ depends on completed behavior from at least two repositories. Do not combine
 implementation for multiple repositories in one ticket.
 
 GitHub, GitLab, Jira, Beads, local documents, and a free-form workflow are
-project choices handled by the authorized harness adapter. The MCP stores the
-graph, origins, revisions, and public references; it does not require tracker
-credentials or silently choose a destination.
+project choices handled by the authorized harness adapter. Read
+`.specgate/tracker.json` (`{"destination":"github"}`). A missing file keeps
+GitHub. GitLab, Jira, and Beads publish only through an injected adapter.
+Local documents and the free-form workflow do not use tracker credentials.
+The MCP stores the graph, origins, revisions, and public references; it does
+not require tracker credentials or silently choose a destination.
 
 Present one consolidated human review before publication. Approval records the
 exact graph revision, relation capabilities, and publication authorization.
 Rejection keeps the graph unpublished and returns to decomposition.
+
+Close that review with a mermaid flowchart. One node per ticket, with its
+title and repository. Draw an edge from each blocker to the ticket it blocks.
+A ticket with an empty `blocked_by` has no incoming edge.
+
+On GitHub, leave `native_dependencies` enabled. Publication adds each
+`blocked_by` link and reads the dependencies back; the ticket counts as
+published only when those links are present. Tell the person the edges are
+those GitHub blocked-by links. The issue body may repeat the same edges as a
+reading list.
+
+Keep the graph revision inside the approval tool call. The message ends on
+the diagram.
 
 Publish with a stable idempotency key. Reconcile an uncertain response before
 retrying, reject ambiguous duplicate references, and never create a second item
