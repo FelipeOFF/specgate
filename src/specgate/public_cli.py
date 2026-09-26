@@ -124,6 +124,16 @@ def _install_action(report: object) -> str:
     return "ok"
 
 
+def _append_session_env(text: str, result: Mapping[str, Any]) -> str:
+    if not isinstance(result.get("session_env"), dict):
+        return text
+    return (
+        text.rstrip()
+        + "\n\nA key do MCP fica disponível em todo terminal novo. "
+        "Feche o harness e abra de novo."
+    )
+
+
 def _format_install(result: Mapping[str, Any]) -> str:
     if result.get("installed") is False:
         return "Nenhum harness selecionado."
@@ -135,9 +145,12 @@ def _format_install(result: Mapping[str, Any]) -> str:
             title = "Specgate instalado, verificação incompleta."
             extra = f"\n    {error}" if error else ""
             body = "\n".join(text.splitlines()[1:])
-            return f"{title}{extra}{body}"
-        return text.replace("Specgate ok.", "Specgate instalado.", 1).replace(
-            "Specgate com falha.", "Specgate instalado, com falha.", 1
+            return _append_session_env(f"{title}{extra}{body}", result)
+        return _append_session_env(
+            text.replace("Specgate ok.", "Specgate instalado.", 1).replace(
+                "Specgate com falha.", "Specgate instalado, com falha.", 1
+            ),
+            result,
         )
     harnesses = result.get("harnesses")
     harnesses = harnesses if isinstance(harnesses, dict) else {}
@@ -145,7 +158,7 @@ def _format_install(result: Mapping[str, Any]) -> str:
         _status_row(name, _harness_line(name, harnesses[name]))
         for name in _ordered_harnesses(harnesses)
     ]
-    return "\n".join(["Specgate instalado.", "", *rows])
+    return _append_session_env("\n".join(["Specgate instalado.", "", *rows]), result)
 
 
 def _format_uninstall(result: Mapping[str, Any]) -> str:

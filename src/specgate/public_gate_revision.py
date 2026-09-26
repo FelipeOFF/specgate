@@ -1,5 +1,5 @@
 """Opaque public binding to the private runtime-gate implementation."""
 
 RUNTIME_GATES_SHA256 = (
-    "65e04199b8747172f304845dd975a33737ddbdaa8c406c1cdc08d654871d9ae0"
+    "e1f8bf05de34a8cad530f6a9923207409c1e9ce158e64c10ae14638592dd482c"
 )

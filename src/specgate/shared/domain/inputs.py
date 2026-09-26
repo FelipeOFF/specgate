@@ -49,6 +49,20 @@ def threshold(value: float) -> None:
         raise ValueError("Threshold deve ser um número finito entre 0 e 1.")
 
 
+def closed_gate_review(selected: Any, label: Any, reason: Any) -> str | None:
+    """Name the option a closed gate withheld."""
+    if not isinstance(selected, str) or not selected.strip():
+        return None
+    shown = label.strip() if isinstance(label, str) and label.strip() else selected
+    named = shown if shown == selected else f"{shown} ({selected})"
+    detail = reason.strip() if isinstance(reason, str) and reason.strip() else "gate_closed"
+    return (
+        f"Jev escolheu {named}. "
+        f"O gate ficou fechado: {detail}. "
+        "Confirme essa opção ou escolha outra."
+    )
+
+
 def review_metadata(mode: str, *responses: dict[str, Any]) -> dict[str, Any]:
     return {
         "mode": mode,

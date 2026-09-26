@@ -211,27 +211,49 @@ def build_context(
     return packet
 
 
-def _valid_evidence(item: Evidence) -> bool:
-    return bool(
-        item.id.strip()
-        and item.source.strip()
-        and item.text.strip()
-        and item.revision == sha256(item.text.encode()).hexdigest()
-    )
+def readiness_gaps(packet: ContextPacket | None) -> tuple[str, ...]:
+    """Name each readiness check that still blocks a decision."""
+    if packet is None:
+        return (
+            "objetivo ausente",
+            "regras ausentes",
+            "artefato ausente",
+            "alternativas ausentes",
+            "evidência ausente",
+        )
+    gaps: list[str] = []
+    if not packet.objective.strip():
+        gaps.append("objetivo ausente")
+    if not any(rule.strip() for rule in packet.rules):
+        gaps.append("regras ausentes")
+    if not packet.artifact.strip():
+        gaps.append("artefato ausente")
+    if not any(choice.strip() for choice in packet.alternatives):
+        gaps.append("alternativas ausentes")
+    if not packet.evidence:
+        gaps.append("evidência ausente")
+    else:
+        if any(
+            not item.id.strip() or not item.source.strip() or not item.text.strip()
+            for item in packet.evidence
+        ):
+            gaps.append("evidência sem identificador, origem ou texto")
+        if any(
+            item.revision != sha256(item.text.encode()).hexdigest()
+            for item in packet.evidence
+        ):
+            gaps.append("revisão da evidência não é o sha256 do texto")
+    if packet.gaps:
+        gaps.append("lacuna presente")
+    if packet.conflicts:
+        gaps.append("conflito presente")
+    if packet.unexamined:
+        gaps.append("item não examinado")
+    return tuple(gaps)
 
 
 def _is_ready(packet: ContextPacket) -> bool:
-    return bool(
-        packet.objective.strip()
-        and any(rule.strip() for rule in packet.rules)
-        and packet.artifact.strip()
-        and packet.evidence
-        and all(_valid_evidence(item) for item in packet.evidence)
-        and any(choice.strip() for choice in packet.alternatives)
-        and not packet.gaps
-        and not packet.conflicts
-        and not packet.unexamined
-    )
+    return not readiness_gaps(packet)
 
 
 def assess_context(

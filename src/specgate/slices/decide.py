@@ -6,7 +6,7 @@ from hashlib import sha256
 from typing import Any, Literal
 from uuid import uuid4
 
-from specgate.context import ContextPacket, assess_context
+from specgate.context import ContextPacket, readiness_gaps
 from specgate.shared.domain.decisions import question_revision, validate_response
 from specgate.shared.domain.inputs import (
     Item,
@@ -83,8 +83,13 @@ async def decide(
         return {**result, "reason": "personal_fact_missing"}
     if question_type != "single_choice":
         return {**result, "reason": "unsupported_question_type"}
-    if context is None or assess_context(context, 1, set()).action != "evaluate":
-        return {**result, "action": "collect", "reason": "insufficient_context"}
+    missing = readiness_gaps(context)
+    if missing:
+        return {
+            **result,
+            "action": "collect",
+            "reason": "insufficient_context: " + "; ".join(missing),
+        }
 
     public_ids = list(public_options)
     internal_ids = {

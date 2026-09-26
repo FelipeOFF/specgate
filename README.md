@@ -79,7 +79,7 @@ A question Jev can close from `CONTEXT.md` and the authorized roots comes back a
 
 Codex uses a controlled app-server client. Claude Code uses native `UserPromptSubmit` and `PreToolUse` hooks plus user-scoped `mcpServers.specgate` in `~/.claude.json`. Cursor writes `~/.cursor/mcp.json`. Grok Build merges `[mcp_servers.specgate]` into `~/.grok/config.toml` (and `~/.grok/mcp.json` if that file already exists); the wrapper still injects the key for the ACP client. Grok Bot has no public interception contract: after install, copy `~/.specgate/grok-bot/specgate/GROK_BOT.md` as a private skill and attach the Custom MCP in the product. Doctor reports that limit instead of pretending the roundtrip was tested.
 
-Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `DEV_DECISION_MCP_API_KEY` for old clients) into that process only.
+Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `DEV_DECISION_MCP_API_KEY` for old clients) into that process. Install also publishes those variables for every new shell and the graphical login session, reading the credential file each time. The key is not copied into shell rc files or the login agent. Restart the harness after install.
 
 ## Skills
 
@@ -131,7 +131,7 @@ python3 -m venv .venv
 - Context sent to the MCP is the evidence you authorized for that call. Model provider keys never leave the server process.
 - The client talks to the host over HTTPS (HTTP only on loopback) and uses the system CAs.
 - No MCP, auth failure, or a protocol major mismatch: the harness continues and the decision stays in review.
-- `action=auto` is not permission to merge, deploy, or publish. Without a calibration manifest on the host the server reports `calibrated=false` and `auto_advance=false`.
+- `action=auto` is not permission to merge, deploy, or publish. Without a calibration manifest, `jev_decide` still returns `action=auto` for one real option strictly above 0.80. Verify, screen and find stay at `calibrated=false` and `auto_advance=false`.
 
 ## Uninstall
 

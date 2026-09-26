@@ -49,6 +49,7 @@ from specgate.product import (
     grok_bot_root,
     wrapper_path,
 )
+from specgate.session_env import install_session_env, uninstall_session_env
 
 PROFILE = "default"
 _OWNER = "specgate"
@@ -572,6 +573,7 @@ def install_public_codex(
         raise
     finally:
         transaction.close()
+    install_session_env(home, credential_path)
     return {
         "profile": PROFILE,
         "credential": str(credential_path),
@@ -715,6 +717,7 @@ def install_public_harnesses(
         "wrappers": {
             name: wrappers[name]["path"] for name in harnesses if name in wrappers
         },
+        "session_env": install_session_env(home, credential_path),
     }
 
 
@@ -1072,4 +1075,5 @@ def uninstall_public_harnesses(
         removed.append(str(profile_path))
     else:
         preserved.append(str(profile_path))
+    uninstall_session_env(home)
     return {"harnesses": reports, "removed": removed, "preserved": preserved}

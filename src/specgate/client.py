@@ -21,7 +21,7 @@ from specgate.context import (
 from specgate.gate_policy import GatePolicy, candidate_eligible, recipe_versions
 from specgate.recipe_inputs import request_revision
 from specgate.shared.domain.decisions import question_revision
-from specgate.shared.domain.inputs import Item, checked_text
+from specgate.shared.domain.inputs import Item, checked_text, closed_gate_review
 from specgate.transport import MCPTransportError, call_tool
 
 
@@ -58,6 +58,29 @@ def _human_question(packet: ContextPacket) -> str:
     if issues:
         return "Quais evidências resolvem estas pendências? " + "; ".join(issues)
     return f"Você confirma a avaliação para o objetivo: {packet.objective}?"
+
+
+def _review_reason(decision: dict[str, Any], arguments: dict[str, Any]) -> str:
+    selected = decision.get("selected_option")
+    label = next(
+        (
+            item.get("text")
+            for item in arguments.get("options") or []
+            if isinstance(item, dict) and item.get("id") == selected
+        ),
+        None,
+    )
+    gate = decision.get("gate")
+    detail = gate.get("reason") if isinstance(gate, dict) else None
+    if not isinstance(detail, str):
+        fallback = decision.get("reason")
+        detail = fallback if isinstance(fallback, str) else None
+    named = closed_gate_review(
+        selected, label if isinstance(label, str) else None, detail
+    )
+    if named:
+        return named
+    return "A avaliação exige revisão humana; consulte a política do gate."
 
 
 async def review_request(
@@ -206,6 +229,23 @@ async def review_request(
             try:
                 gate = decision["gate"]
                 policy = GatePolicy.model_validate(gate["policy"])
+                binding = gate.get("binding")
+                exam_bound = bool(
+                    gate.get("artifact_revision")
+                    and gate.get("report_sha256")
+                    and isinstance(binding, dict)
+                    and binding.get("tool") == original_tool
+                    and binding.get("policy") == policy.revision
+                    and binding.get("recipe") == recipe_versions()[original_tool]
+                )
+                confidence_bound = bool(
+                    original_tool == "jev_decide"
+                    and gate.get("reason") == "confidence_policy_satisfied"
+                    and decision.get("reason") == "confidence_policy_satisfied"
+                    and not gate.get("artifact_revision")
+                    and not gate.get("report_sha256")
+                    and binding is None
+                )
                 valid_policy = bool(
                     decision.get("mode") == "real"
                     and decision.get("calibrated") is True
@@ -213,11 +253,7 @@ async def review_request(
                     and gate["passed"] is True
                     and gate["scope"] == "recommendation"
                     and gate["execution_authorized"] is False
-                    and gate["artifact_revision"]
-                    and gate["report_sha256"]
-                    and gate["binding"]["tool"] == original_tool
-                    and gate["binding"]["policy"] == policy.revision
-                    and gate["binding"]["recipe"] == recipe_versions()[original_tool]
+                    and (exam_bound or confidence_bound)
                     and decision.get("tool") == original_tool
                     and decision.get("context_revision") == context.packet.revision
                     and decision.get("request_revision")
@@ -319,7 +355,7 @@ async def review_request(
             "question": None if automatic else result["question"],
             "reason": "Recomendação aceita pela política calibrada; não autoriza efeitos externos."
             if automatic
-            else "A avaliação exige revisão humana; consulte a política do gate.",
+            else _review_reason(decision, arguments),
             "decision": decision,
             "decision_revision": context.packet.revision,
         }
