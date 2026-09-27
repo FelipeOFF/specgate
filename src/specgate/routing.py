@@ -276,6 +276,12 @@ async def route_skills(
         return {
             **result,
             "status": "incompatible" if coverage["rejected"] else "absent",
+            "reason": (
+                "As candidatas foram retidas pelo screening ou pela avaliação de adequação; "
+                "consulte coverage.rejected e os gates das avaliações."
+                if coverage["rejected"]
+                else result["reason"]
+            ),
         }
     suitable.sort(key=lambda item: (-item[0], item[1]["id"]))
     if len(suitable) > 1 and isclose(suitable[0][0], suitable[1][0]):

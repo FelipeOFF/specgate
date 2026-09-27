@@ -69,7 +69,7 @@ A question Jev can close from `CONTEXT.md` and the authorized roots comes back a
 
 | Agent | Install | Where it lands |
 | --- | --- | --- |
-| Codex | `specgate install --harness codex` | `~/.agents/skills`, `~/.local/bin/specgate-codex`, Codex MCP `specgate` |
+| Codex | `specgate install --harness codex` | `~/.agents/skills`, `~/.local/bin/specgate-codex`, Codex MCP `specgate`, `UserPromptSubmit` in `$CODEX_HOME/hooks.json` (default `~/.codex`) |
 | Claude Code | `specgate install --harness claude-code` | `~/.claude.json` (`mcpServers.specgate`, user scope), hooks in `~/.claude/settings.json`, `~/.claude/skills` |
 | Cursor | `specgate install --harness cursor` | `~/.cursor/mcp.json`, `~/.cursor/skills`, `~/.local/bin/specgate-cursor` |
 | Grok Build | `specgate install --harness grok-build` | `~/.grok/config.toml`, `~/.grok/skills`, `~/.local/bin/specgate-grok-build` |
@@ -77,7 +77,9 @@ A question Jev can close from `CONTEXT.md` and the authorized roots comes back a
 
 `install` with no `--harness` detects what is on this machine and asks once per agent. Repeat installs keep foreign skills and config they do not own.
 
-Codex uses a controlled app-server client. Claude Code uses native `UserPromptSubmit` and `PreToolUse` hooks plus user-scoped `mcpServers.specgate` in `~/.claude.json`. Cursor writes `~/.cursor/mcp.json`. Grok Build merges `[mcp_servers.specgate]` into `~/.grok/config.toml` (and `~/.grok/mcp.json` if that file already exists); the wrapper still injects the key for the ACP client. Grok Bot has no public interception contract: after install, copy `~/.specgate/grok-bot/specgate/GROK_BOT.md` as a private skill and attach the Custom MCP in the product. Doctor reports that limit instead of pretending the roundtrip was tested.
+Codex installs a native `UserPromptSubmit` hook and retains the controlled app-server client for structured questions. After installation or a changed hook command, review the hook in Codex `/hooks`; installation does not grant native trust. The prompt hook sends only the current prompt and the public Specgate bundle to the configured MCP. It consults Codex's enabled skills locally, checks installed revisions, and excludes disabled or modified skills. Personal catalogs, project files and native session metadata are not sent by this adapter. A remote review gate never becomes an automatic selection: the hook supplies its status instead. Doctor inspects installation without proving runtime execution or calibration. Install/update/uninstall preserve other hooks and refuse to overwrite a modified managed entry.
+
+Claude Code uses native `UserPromptSubmit` and `PreToolUse` hooks plus user-scoped `mcpServers.specgate` in `~/.claude.json`. Cursor writes `~/.cursor/mcp.json`. Grok Build merges `[mcp_servers.specgate]` into `~/.grok/config.toml` (and `~/.grok/mcp.json` if that file already exists); the wrapper still injects the key for the ACP client. Grok Bot has no public interception contract: after install, copy `~/.specgate/grok-bot/specgate/GROK_BOT.md` as a private skill and attach the Custom MCP in the product. Doctor reports that limit instead of pretending the roundtrip was tested.
 
 Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `DEV_DECISION_MCP_API_KEY` for old clients) into that process. Install also publishes those variables for every new shell and the graphical login session, reading the credential file each time. The key is not copied into shell rc files or the login agent. Restart the harness after install.
 
