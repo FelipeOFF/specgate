@@ -140,7 +140,7 @@ def reinstall_public_package(
 ) -> None:
     """Replace the installed public client with the repository tip."""
     completed = spawn(
-        ["pipx", "install", "--force", repository],
+        ["pipx", "install", "--force", f"git+{repository}"],
         capture=False,
     )
     if completed.returncode != 0:
