@@ -13,6 +13,15 @@ Set each evidence revision to the sha256 of that evidence text before the call.
 Leave gaps, conflicts, and unexamined items empty. A complete packet reaches the
 model.
 
+Before the first `grill_continue`, obtain explicit authorization from the human
+to disclose the current evidence packet to the configured Specgate server and
+its evaluation provider. Obtain it before `grill_start` too when that call
+targets a remote server. Selecting authorized project roots or requesting this
+workflow does not itself authorize that disclosure. Authorization covers only
+the current grill run and destination; ask again if the destination changes. If
+authorization is declined, do not make remote grill calls and keep the
+questions in human review.
+
 When the reason starts with `insufficient_context:` and names the failed checks,
 repair those checks and retry the same question. That list is a packet repair.
 It does not mean Jev is off. Do not resend the same kind of revision.
