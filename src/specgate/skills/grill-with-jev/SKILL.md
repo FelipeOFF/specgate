@@ -57,6 +57,19 @@ When a pending turn includes `review_text`, show that sentence before asking
 the human to confirm. It names the option Jev selected and the gate reason.
 A closed gate still has an answer. Do not describe it as a missing response.
 
+After an explicit human answer, call `grill_answer` with the current run ID,
+revision, `pending.id` (not the question ID), and a new idempotency key for that
+intent. Put the chosen option ID in `answer.selected_option` and any human
+explanation in `answer.text`. Send `authorization_granted` only when the human
+explicitly grants or denies authorization. In Codex Default mode, ask in chat
+when the plan-only `request_user_input` tool is unavailable.
+
+Confirm the returned turn is `resolved`, has `origin=human`, and contains the
+answer before advancing. A revision increment alone is not success. If the
+turn remains pending, call `grill_get` to reconcile and report the inconsistency;
+do not loop over new keys or force `finish=true`. On a transport failure, retry
+the identical request with its original key or reconcile with `grill_get`.
+
 Do not interrupt the user for each automated decision. At the end, call
 `grill_summary` and show a compact list containing the question, selected option,
 origin, evidence sources, and remaining gaps. Keep the complete server record
