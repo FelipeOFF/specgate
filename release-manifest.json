@@ -34,7 +34,7 @@
     "src/specgate/shared/domain/decisions.py": "0acf9947d84ccb2b0f5f3951b105be4cb299952ad896ce25272b293fb8acf015",
     "src/specgate/shared/domain/inputs.py": "a9dc8bc6e7e68154852dd5bfafcf5d71a604a4ff290b5bca60e1a7544a334f4b",
     "src/specgate/shared/ports/jev.py": "b08205ff2f6a04bcc99b472d7ffbe325c70f62246c0926a58a5a279e1e994884",
-    "src/specgate/skills/grill-with-jev/SKILL.md": "0ae5395f6f0409723f3106fe3a34e3c105d87ab1272bb1b19f2454f447d1ad66",
+    "src/specgate/skills/grill-with-jev/SKILL.md": "915b9c55e4f989f7f5ae555568eff14b571a42c95d8fc4ea0727f368c049ad9e",
     "src/specgate/skills/implement-spec-jev/SKILL.md": "0b0e5b4158ab97d80442fbf7252da8e8f18c4bb1a347b1843cbadeb3083fe724",
     "src/specgate/skills/iterate-with-jev/SKILL.md": "fdc3d6e3a682556837740194dfeed55987fc01ccf3c0604a065665e241f0bbcf",
     "src/specgate/skills/specgate/GROK_BOT.md": "e625431944849bf978117ac1518a626d80f88135c594c9461abc7bfa44db61c0",
@@ -55,7 +55,7 @@
   "provenance": {
     "generator": "scripts/export_public_release.py",
     "source_repository": "FelipeOFF/specgate-server-mcp",
-    "source_revision": "59da0f44f548a8d01691f67284d686ff72fa10e5"
+    "source_revision": "787647ff3e6053a8d989801a85ca26edbad95aa2"
   },
   "schema": 1,
   "version": "0.1.0"
