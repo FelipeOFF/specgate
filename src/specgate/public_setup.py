@@ -15,6 +15,8 @@ from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from specgate.claude_setup import (
+    _read_settings,
+    _write_settings,
     diagnose_claude,
     install_claude,
     uninstall_claude,
@@ -132,6 +134,7 @@ class PublicSetupReport(TypedDict):
     wrapper: str
     codex: SetupReport
     workflows: dict[str, SkillInstallStatus]
+    hooks: str
 
 
 def public_harness_capabilities() -> dict[str, dict[str, Any]]:
@@ -139,6 +142,7 @@ def public_harness_capabilities() -> dict[str, dict[str, Any]]:
     return {
         "codex": {
             "mode": "controlled_app_server",
+            "prompt_routing": "native_hook_requires_trust",
             "structured_questions": "protocol_double",
             "mandatory_interception": False,
         },
@@ -489,6 +493,48 @@ def _skill_targets(root: Path) -> list[Path]:
     ]
 
 
+def _codex_home(home: Path) -> Path:
+    override = os.environ.get("CODEX_HOME") if home == Path.home() else None
+    return Path(override).expanduser().resolve() if override else home / ".codex"
+
+
+def _codex_hook_settings(
+    path: Path,
+    profile: dict[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    settings = _read_settings(path)
+    previous = (profile or {}).get("codex_hook")
+    if isinstance(previous, dict):
+        if previous.get("path") != str(path):
+            raise ValueError(
+                "O diretório do hook Codex mudou; preserve a instalação anterior."
+            )
+        entry = previous.get("entry")
+        if entry not in settings.get("hooks", {}).get("UserPromptSubmit", []):
+            raise ValueError("O hook Codex gerenciado foi modificado ou removido.")
+        return settings, entry
+    return settings, None
+
+
+def _remove_codex_hook(profile: dict[str, Any]) -> str:
+    previous = profile.get("codex_hook")
+    if not isinstance(previous, dict):
+        return "absent"
+    path = Path(previous["path"])
+    if path.is_symlink():
+        return "preserved"
+    try:
+        settings, entry = _codex_hook_settings(path, profile)
+    except (ValueError, TypeError, OSError):
+        return "preserved"
+    entries = settings["hooks"]["UserPromptSubmit"]
+    entries.remove(entry)
+    if not entries:
+        del settings["hooks"]["UserPromptSubmit"]
+    _write_settings(path, settings)
+    return "removed"
+
+
 def _managed_targets(home: Path, harnesses: Sequence[HarnessName]) -> list[Path]:
     profile_path, credential_path, _ = _profile_paths(home, write=True)
     targets = [profile_path, credential_path]
@@ -497,6 +543,7 @@ def _managed_targets(home: Path, harnesses: Sequence[HarnessName]) -> list[Path]
         if command is not None:
             targets.append(_wrapper_path(home, harness))
         if harness == "codex":
+            targets.append(_codex_home(home) / "hooks.json")
             targets.extend(_skill_targets(home / ".agents/skills"))
         elif harness == "claude-code":
             targets.append(home / ".claude/settings.json")
@@ -555,8 +602,43 @@ def install_public_codex(
         harnesses=("codex",),
         wrappers=wrappers,
     )
+    hooks_path = _codex_home(home) / "hooks.json"
+    settings, previous_hook = _codex_hook_settings(hooks_path, previous_profile)
+    entry = {
+        "hooks": [
+            {
+                "type": "command",
+                "command": shlex.join(
+                    [
+                        sys.executable,
+                        "-B",
+                        str(Path(__file__).with_name("codex_hook.py")),
+                        "--profile",
+                        str(profile_path),
+                        "--source-root",
+                        str(source.parent.resolve()),
+                    ]
+                ),
+                "timeout": 50,
+                "statusMessage": "Specgate skill routing",
+                "additionalContextLimit": 20000,
+            }
+        ]
+    }
+    entries = settings.setdefault("hooks", {}).setdefault("UserPromptSubmit", [])
+    if previous_hook is not None:
+        entries[entries.index(previous_hook)] = entry
+    else:
+        entries.append(entry)
+    profile["codex_hook"] = {"path": str(hooks_path), "entry": entry}
     transaction = _PathTransaction(
-        [profile_path, credential_path, wrapper_path, *_skill_targets(skill_root)]
+        [
+            profile_path,
+            credential_path,
+            wrapper_path,
+            hooks_path,
+            *_skill_targets(skill_root),
+        ]
     )
     try:
         _write_private(credential_path, credential)
@@ -568,6 +650,7 @@ def install_public_codex(
         )
         workflows = _install_workflow_skills(source.parent, skill_root)
         codex = install_codex(source, skill_root, url, codex_command=codex_command)
+        _write_settings(hooks_path, settings)
     except BaseException:
         transaction.rollback()
         raise
@@ -580,6 +663,7 @@ def install_public_codex(
         "wrapper": str(wrapper_path),
         "codex": codex,
         "workflows": workflows,
+        "hooks": "unchanged" if previous_hook == entry else "created",
     }
 
 
@@ -804,7 +888,7 @@ async def doctor_public_codex(
         or _digest(credential_path.read_bytes()) != profile.get("credential_sha256")
     ):
         raise ValueError("A credencial gerenciada está ausente, exposta ou modificada.")
-    return await diagnose_codex(
+    report = await diagnose_codex(
         project,
         home / ".agents/skills",
         str(profile["url"]),
@@ -812,6 +896,24 @@ async def doctor_public_codex(
         codex_command=codex_command,
         timeout_seconds=timeout_seconds,
     )
+    try:
+        _, entry = _codex_hook_settings(_codex_home(home) / "hooks.json", profile)
+    except (ValueError, TypeError, OSError):
+        entry = None
+    report["native_hook"] = {
+        "installed": entry is not None,
+        "event": "UserPromptSubmit",
+        "trust": "requires_harness_confirmation",
+        "runtime_verified": False,
+        "catalog": "enabled_public_specgate_bundle",
+    }
+    report["limitations"].append(
+        "Native prompt routing requires trusted hooks and calibrated remote gates; "
+        "doctor does not submit a prompt or prove automatic selection."
+    )
+    if entry is None:
+        report["usable"] = False
+    return report
 
 
 async def doctor_public_harnesses(
@@ -970,6 +1072,9 @@ def uninstall_public_codex(
             "removed": removed,
             "preserved": preserved,
         }
+    hooks = _remove_codex_hook(profile)
+    if hooks == "preserved":
+        preserved.append(str(profile["codex_hook"]["path"]))
     _, credential_path, wrapper_path = _profile_paths(home)
     candidates = (
         (credential_path, "credential_sha256"),
@@ -991,6 +1096,7 @@ def uninstall_public_codex(
         "workflows": workflows,
         "removed": removed,
         "preserved": preserved,
+        "hooks": hooks,
     }
 
 

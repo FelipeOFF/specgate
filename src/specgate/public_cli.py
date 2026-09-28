@@ -32,7 +32,7 @@ from specgate.routing import route_skills
 from specgate.transport import call_tool, negotiate_protocol
 
 _HARNESS_SETUP_HINTS = {
-    "codex": "Codex — app-server controlado",
+    "codex": "Codex — hook nativo de prompts e app-server controlado",
     "claude-code": "Claude Code — hooks nativos (UserPromptSubmit, PreToolUse)",
     "cursor": "Cursor — ACP controlado",
     "grok-build": "Grok Build — ACP controlado",
@@ -83,6 +83,8 @@ def _doctor_row(name: str, report: object) -> tuple[bool, str]:
         return False, line
     if name == "grok-bot":
         return True, _status_row(name, _MANUAL_CONNECTOR)
+    if name == "codex" and isinstance(report.get("native_hook"), dict):
+        return True, _status_row(name, "instalado; confira confiança do hook em /hooks")
     return True, _status_row(name, "ok")
 
 
