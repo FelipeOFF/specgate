@@ -16,11 +16,11 @@ import anyio
 import httpx2
 from mcp import ClientSession
 from mcp.client.sse import sse_client
-from mcp.client.streamable_http import streamable_http_client
 from mcp.shared.dispatcher import ProgressFnT
 from mcp.shared.exceptions import MCPError
 from mcp.types import CallToolResult, Implementation
 
+from specgate.payload import request_overflow
 from specgate.privacy import ensure_safe_content
 from specgate.protocol import (
     HANDSHAKE_TOOL,
@@ -28,6 +28,7 @@ from specgate.protocol import (
     NegotiatedProtocol,
     negotiate,
 )
+from specgate.sse_transport import workflow_http_client as streamable_http_client
 
 _private_transport: ContextVar[bool] = ContextVar(
     "private_mcp_transport", default=False
@@ -83,6 +84,8 @@ async def call_tool(
     project_id: str | None = None,
 ) -> CallToolResult:
     ensure_safe_content(arguments, secrets=(token,))
+    if overflow := request_overflow(arguments):
+        raise overflow
     async with _session(
         url,
         token,

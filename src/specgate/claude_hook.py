@@ -17,12 +17,21 @@ from typing import Any
 if __package__ in {None, ""}:  # pragma: no cover - exercised by the installed hook
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from specgate.claude_setup import hooks_installed
+from specgate.claude_skill_settings import disabled_skill_ids
 from specgate.client import ReviewRequest
 from specgate.codex_client import DecisionFn, mcp_question_decider
+from specgate.context import discover_skill_catalog
+from specgate.delegation import (
+    handle_permission,
+    mcp_permission_decider,
+    permission_output,
+)
 from specgate.privacy import ensure_safe_content
-from specgate.product import LEGACY_TOKEN_ENV, TOKEN_ENV
-from specgate.routing import confirm_skill_loaded, route_skills
+from specgate.product import LEGACY_TOKEN_ENV, TOKEN_ENV, packaged_skills
+from specgate.routing import NativeHook, confirm_skill_loaded, route_skills
 from specgate.transport import MCPTransportError
+from specgate.workflow_policy import resolve_workflow_policy
 
 MAX_INPUT_BYTES = 4 * 1024 * 1024
 SkillRouter = Callable[[str, Path, str], Awaitable[dict[str, Any]]]
@@ -42,6 +51,9 @@ class ClaudeHookConfig:
     timeout_seconds: float = 30
     token_env: str = TOKEN_ENV
     state_root: Path | None = None
+    config_dir: Path | None = None
+    # The public skills to compare with; None means the bundle this package ships.
+    public_roots: tuple[Path, ...] | None = None
 
 
 def _human_question(warning: str | None = None) -> dict[str, Any]:
@@ -123,7 +135,9 @@ def _offline_result(result: dict[str, Any]) -> bool:
     return False
 
 
-async def _attempt(operation: Callable[[], Awaitable[dict[str, Any]]]) -> dict[str, Any]:
+async def _attempt(
+    operation: Callable[[], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
     for attempt in range(2):
         try:
             result = await operation()
@@ -151,6 +165,14 @@ def _roots(config: ClaudeHookConfig, project: Path) -> tuple[Path, ...]:
     return tuple(root for root in roots if root.is_dir())
 
 
+def _hidden(
+    config: ClaudeHookConfig, project: Path, roots: tuple[Path, ...]
+) -> set[str]:
+    """Aliases of the skills the Claude Code settings keep from the model."""
+    catalog = discover_skill_catalog(list(roots), authorized_roots=list(roots))
+    return disabled_skill_ids(catalog, config.config_dir, project)
+
+
 async def _route_prompt(
     prompt: str,
     project: Path,
@@ -159,6 +181,10 @@ async def _route_prompt(
 ) -> dict[str, Any]:
     roots = _roots(config, project)
     if not roots:
+        return {"action": "needs_human", "origin": "review"}
+    try:
+        hidden = _hidden(config, project, roots)
+    except (OSError, ValueError):
         return {"action": "needs_human", "origin": "review"}
     sources = [source for source in config.sources if (project / source).is_file()]
     request = ReviewRequest(
@@ -175,12 +201,19 @@ async def _route_prompt(
         config.url,
         token,
         authorized_roots=list(roots),
+        disabled_ids=hidden,
+        public_roots=[packaged_skills()]
+        if config.public_roots is None
+        else list(config.public_roots),
         timeout_seconds=config.timeout_seconds,
     )
 
 
 def _selected_context(
-    result: dict[str, Any], roots: tuple[Path, ...]
+    result: dict[str, Any],
+    project: Path,
+    roots: tuple[Path, ...],
+    config: ClaudeHookConfig,
 ) -> str | None:
     candidate = result.get("candidate")
     if (
@@ -198,20 +231,36 @@ def _selected_context(
         or not skill_id
         or not isinstance(revision, str)
         or not revision
+        or not isinstance(instructions, str)
+        or not instructions.strip()
     ):
         return None
+    ensure_safe_content(instructions)
+    try:
+        # Read again: the settings may have changed since routing chose this skill.
+        hidden = _hidden(config, project, roots)
+    except (OSError, ValueError):
+        return None
+    # This handler is the hook: it runs now and hands the instructions to Claude Code.
+    hook = NativeHook(
+        harness="claude-code",
+        event="UserPromptSubmit",
+        installed=config.config_dir is not None and hooks_installed(config.config_dir),
+        executed=True,
+        skill_id=skill_id,
+        revision=revision,
+    )
     confirmed = confirm_skill_loaded(
         result,
         skill_id,
         revision,
         authorized_roots=list(roots),
+        disabled_ids=hidden,
+        hook=hook,
     )
     loaded = confirmed.get("candidate")
     if not isinstance(loaded, dict) or loaded.get("loaded") is not True:
         return None
-    if not isinstance(instructions, str) or not instructions.strip():
-        return None
-    ensure_safe_content(instructions)
     return (
         f"Specgate selecionou e carregou {skill_id}. Origem: automated. "
         "Siga estas instruções para o pedido atual:\n\n"
@@ -219,7 +268,9 @@ def _selected_context(
     )
 
 
-def _question_request(payload: dict[str, Any]) -> tuple[dict[str, Any], list[str]] | None:
+def _question_request(
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], list[str]] | None:
     if payload.get("tool_name") != "AskUserQuestion":
         return None
     tool_input = payload.get("tool_input")
@@ -299,6 +350,21 @@ async def handle_claude_hook(
         token = os.environ.get(config.token_env, "") or os.environ.get(
             LEGACY_TOKEN_ENV, ""
         )
+        if event == "PermissionRequest":
+            from specgate.delegation import load_delegation
+
+            if load_delegation().mode == "manual":
+                return {}
+            if not token:
+                return permission_output(False, "credencial indisponível")
+            project = _project(payload)
+            policy = resolve_workflow_policy(project=project)
+            return await handle_permission(
+                payload,
+                host=config.url,
+                confidence=policy["effective_confidence"],
+                decide=question_decider or mcp_permission_decider(config.url, token),
+            )
         if not token:
             warning = _warning(payload, config)
             return (
@@ -340,7 +406,9 @@ async def handle_claude_hook(
                     if warning
                     else {}
                 )
-            context = _selected_context(result, _roots(config, project))
+            context = _selected_context(
+                result, project, _roots(config, project), config
+            )
             return (
                 {
                     "hookSpecificOutput": {
@@ -361,7 +429,9 @@ async def handle_claude_hook(
             project,
             config.url,
             token,
-            sources=[source for source in config.sources if (project / source).is_file()],
+            sources=[
+                source for source in config.sources if (project / source).is_file()
+            ],
             required=config.required,
             timeout_seconds=config.timeout_seconds,
         )
@@ -390,6 +460,10 @@ async def handle_claude_hook(
             }
         }
     except Exception as error:  # noqa: BLE001 - hook failures must retain control
+        if event == "PermissionRequest":
+            return permission_output(
+                False, "hook indisponível; preserve a ação pendente"
+            )
         warning = (
             _warning(payload, config)
             if isinstance(error, (MCPTransportError, OSError, TimeoutError))
@@ -418,6 +492,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=30)
     parser.add_argument("--token-env", default=TOKEN_ENV)
     parser.add_argument("--state-root", type=Path)
+    parser.add_argument("--config-dir", type=Path)
     return parser
 
 
@@ -442,6 +517,7 @@ def main(argv: Sequence[str] | None = None) -> None:
                     timeout_seconds=args.timeout,
                     token_env=args.token_env,
                     state_root=args.state_root,
+                    config_dir=args.config_dir,
                 ),
             )
         )

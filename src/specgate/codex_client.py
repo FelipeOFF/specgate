@@ -17,6 +17,7 @@ from specgate.client import (
     review_request,
 )
 from specgate.context import ContextResult, discover_skill_catalog
+from specgate.gate_policy import BASIS_MANIFEST
 from specgate.routing import route_skills
 from specgate.transport import MCPTransportError
 
@@ -109,9 +110,7 @@ class AutomaticSkillRouter:
     def offline(self) -> bool:
         return self._offline
 
-    async def __call__(
-        self, prompt: str, skills: tuple[CodexSkill, ...]
-    ) -> str | None:
+    async def __call__(self, prompt: str, skills: tuple[CodexSkill, ...]) -> str | None:
         if self._offline:
             return None
         paths: dict[Path, CodexSkill] = {}
@@ -133,7 +132,9 @@ class AutomaticSkillRouter:
         aliases = set(self.disabled_ids)
         catalog_paths = {Path(item.source).resolve() for item in catalog}
         if not paths.keys() <= catalog_paths:
-            raise ValueError("Enabled Codex skills do not match the authorized catalog.")
+            raise ValueError(
+                "Enabled Codex skills do not match the authorized catalog."
+            )
         for item in catalog:
             if Path(item.source).resolve() not in paths:
                 aliases.update(item.aliases)
@@ -173,7 +174,13 @@ class AutomaticSkillRouter:
                 return None
             candidate = result.get("candidate")
             selected: str | None = None
-            if result.get("action") == "auto" and candidate:
+            # Without a native hook to confirm the load, only a validated manifest
+            # may select here; a selection under the confidence policy stays advice.
+            if (
+                result.get("action") == "auto"
+                and result.get("gate_basis") == BASIS_MANIFEST
+                and candidate
+            ):
                 source = Path(candidate["source"]).resolve()
                 selected = paths[source].name if source in paths else None
             self._cache[cache_key] = selected
@@ -301,11 +308,13 @@ class CodexControlledClient:
             "--stdio",
         ),
         timeout_seconds: float = 30,
+        approve: DecisionFn | None = None,
     ) -> None:
         if timeout_seconds <= 0:
             raise ValueError("Timeout must be greater than zero.")
         self._command = tuple(command)
         self._decide = decide
+        self._approve = approve
         self._timeout = timeout_seconds
         self._process: asyncio.subprocess.Process | None = None
         self._reader_task: asyncio.Task[None] | None = None
@@ -481,6 +490,20 @@ class CodexControlledClient:
         while True:
             message = await asyncio.wait_for(self._events.get(), self._timeout)
             method = message.get("method")
+            if method in {
+                "item/commandExecution/requestApproval",
+                "item/fileChange/requestApproval",
+                "item/permissions/requestApproval",
+            }:
+                if self._approve is None:
+                    return ControlledTurn(
+                        "needs_human",
+                        warning="Configure a delegação de aprovações do runner.",
+                    )
+                response = await self._approve(message)
+                if message["id"] not in self._resolved_requests:
+                    await self._write({"id": message["id"], "result": response})
+                continue
             if method == "item/tool/requestUserInput":
                 question = self._parse_question(message)
                 self._question = question
@@ -627,10 +650,14 @@ class CodexControlledClient:
         try:
             while line := await self._process.stdout.readline():
                 if len(line) > MAX_FRAME_BYTES:
-                    raise CodexProtocolError("App-server message exceeds the frame limit.")
+                    raise CodexProtocolError(
+                        "App-server message exceeds the frame limit."
+                    )
                 message = json.loads(line)
                 if message.get("method") == "serverRequest/resolved":
-                    self._resolved_requests.add(message.get("params", {}).get("requestId"))
+                    self._resolved_requests.add(
+                        message.get("params", {}).get("requestId")
+                    )
                 if "method" in message:
                     await self._events.put(message)
                 elif (future := self._pending.get(message.get("id"))) is not None:

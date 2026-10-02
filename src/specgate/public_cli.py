@@ -12,11 +12,13 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any, TextIO
 
+from specgate import flow, research, research_filter
 from specgate.client import ReviewRequest
 from specgate.product import (
     LEGACY_SKILL_SOURCE_ENV,
     SKILL_SOURCE_ENV,
     mcp_api_key,
+    packaged_skills,
 )
 from specgate.public_package import PackageProbes, refresh_public_package
 from specgate.public_setup import (
@@ -30,6 +32,7 @@ from specgate.public_setup import (
 )
 from specgate.routing import route_skills
 from specgate.transport import call_tool, negotiate_protocol
+from specgate.workflow_policy import configure_workflow_policy, resolve_workflow_policy
 
 _HARNESS_SETUP_HINTS = {
     "codex": "Codex — hook nativo de prompts e app-server controlado",
@@ -130,8 +133,7 @@ def _append_session_env(text: str, result: Mapping[str, Any]) -> str:
     if not isinstance(result.get("session_env"), dict):
         return text
     return (
-        text.rstrip()
-        + "\n\nA key do MCP fica disponível em todo terminal novo. "
+        text.rstrip() + "\n\nA key do MCP fica disponível em todo terminal novo. "
         "Feche o harness e abra de novo."
     )
 
@@ -199,6 +201,8 @@ def format_public_report(command: str, result: Mapping[str, Any]) -> str:
         return _format_update(result)
     if command == "smoke":
         return _format_smoke(result)
+    if command == "setup":
+        return json.dumps(dict(result), ensure_ascii=False, indent=2)
     return ""
 
 
@@ -351,12 +355,7 @@ def _bundled_skills() -> Path:
     configured = os.environ.get(SKILL_SOURCE_ENV) or os.environ.get(
         LEGACY_SKILL_SOURCE_ENV
     )
-    if configured:
-        return Path(configured)
-    packaged = Path(__file__).with_name("skills")
-    return (
-        packaged if packaged.is_dir() else Path(__file__).resolve().parents[2] / "skill"
-    )
+    return Path(configured) if configured else packaged_skills()
 
 
 def _endpoint(value: str) -> str:
@@ -389,6 +388,7 @@ async def _smoke(project: Path, host: str, token: str) -> dict[str, Any]:
         host,
         token,
         authorized_roots=[skills],
+        public_roots=[skills],
         project_id=project_id,
     )
     operation = await call_tool(
@@ -408,9 +408,7 @@ async def _smoke(project: Path, host: str, token: str) -> dict[str, Any]:
         raise ValueError("Smoke requires a completed attached MCP operation.")
     candidate = route.get("candidate")
     calls = content.get("provider_calls")
-    paid_calls = (
-        0 if mode == "mock" else len(calls) if isinstance(calls, list) else 1
-    )
+    paid_calls = 0 if mode == "mock" else len(calls) if isinstance(calls, list) else 1
     return {
         "paid_calls": paid_calls,
         "calibration_calls": 0,
@@ -452,6 +450,32 @@ def main(
 ) -> None:
     parser = argparse.ArgumentParser(description="Instalador público Specgate")
     commands = parser.add_subparsers(dest="command", required=True)
+    flow.configure(commands.add_parser("flow"))
+    research.configure(commands.add_parser("research-with-jev"))
+    research_filter.configure(commands.add_parser("research-filter-jev"))
+    setup = commands.add_parser("setup")
+    setup.add_argument("--project", type=Path, default=Path.cwd())
+    setup.add_argument("--scope", choices=("global", "project"), default="global")
+    setup.add_argument("--skill")
+    setup.add_argument("--confidence", type=float)
+    setup.add_argument("--research-budget", type=int)
+    setup.add_argument("--tracker")
+    setup.add_argument("--autonomy", choices=("manual", "until_draft"))
+    setup.add_argument("--allow-project", action="append")
+    setup.add_argument("--allow-command", action="append")
+    setup.add_argument("--allow-host", action="append")
+    setup.add_argument("--allow-repository", action="append")
+    setup.add_argument(
+        "--allow-publication", action="append", choices=("spec", "tickets", "draft_pr")
+    )
+    setup.add_argument("--allow-file-edits", action=argparse.BooleanOptionalAction)
+    setup.add_argument("--authorization-reference")
+    setup.add_argument("--expires-at")
+    setup.add_argument("--require-capability", action="append")
+    setup.add_argument("--personal-skill", action="append")
+    setup.add_argument("--project-file", action="append")
+    setup.add_argument("--clear-adapter-scope", action="store_true")
+    _add_json_flag(setup)
     install = commands.add_parser("install")
     install.add_argument("--host")
     install.add_argument(
@@ -477,7 +501,77 @@ def main(
     as_json = bool(getattr(args, "json", False))
 
     try:
-        if args.command == "install":
+        if args.command == "flow":
+            result = flow.execute(
+                args, home=home, project_id=managed_project_id(home=home)
+            )
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return
+        if args.command == "research-with-jev":
+            print(json.dumps(research.execute(args), ensure_ascii=False, indent=2))
+            return
+        if args.command == "research-filter-jev":
+            print(
+                json.dumps(research_filter.execute(args), ensure_ascii=False, indent=2)
+            )
+            return
+        if args.command == "setup":
+            from specgate.delegation import load_delegation
+
+            delegation = {
+                key: value
+                for key, value in {
+                    "mode": args.autonomy,
+                    "projects": args.allow_project,
+                    "commands": args.allow_command,
+                    "hosts": args.allow_host,
+                    "repositories": args.allow_repository,
+                    "publications": args.allow_publication,
+                    "file_edits": args.allow_file_edits,
+                    "reference": args.authorization_reference,
+                    "expires_at": args.expires_at,
+                }.items()
+                if value is not None
+            }
+            if delegation and (args.scope != "global" or args.skill):
+                raise ValueError(
+                    "A delegação pertence ao usuário; configure-a no escopo global."
+                )
+            changes = {
+                key: value
+                for key, value in {
+                    "confidence": args.confidence,
+                    "research_budget": args.research_budget,
+                    "tracker": args.tracker,
+                    "required_capabilities": args.require_capability,
+                }.items()
+                if value is not None
+            }
+            if (
+                args.personal_skill is not None
+                or args.project_file is not None
+                or args.clear_adapter_scope
+            ):
+                changes["adapter_scope"] = {
+                    "personal_skills": args.personal_skill or [],
+                    "project_files": args.project_file or [],
+                }
+            if changes or delegation:
+                result = configure_workflow_policy(
+                    changes,
+                    home=home,
+                    project=args.project,
+                    skill=args.skill,
+                    scope=args.scope,
+                    delegation_changes=delegation if delegation else None,
+                )
+            else:
+                result = resolve_workflow_policy(
+                    home=home, project=args.project, skill=args.skill
+                )
+            grant = load_delegation(home)
+            result["delegation"] = {**grant.model_dump(), "revision": grant.revision}
+        elif args.command == "install":
             selected = select_harnesses(
                 available=detect_public_harnesses(),
                 requested=args.harness,

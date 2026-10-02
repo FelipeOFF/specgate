@@ -103,12 +103,15 @@ def _hook_entries(
             TOKEN_ENV,
             "--state-root",
             str((config_dir / ".specgate").resolve()),
+            "--config-dir",
+            str(config_dir.resolve()),
         ],
         "timeout": timeout_seconds,
     }
     return {
         "UserPromptSubmit": {"hooks": [hook]},
         "PreToolUse": {"matcher": "AskUserQuestion", "hooks": [hook]},
+        "PermissionRequest": {"hooks": [hook]},
     }
 
 
@@ -286,6 +289,37 @@ def install_claude(
     }
 
 
+def _require_managed_hooks(config_dir: Path) -> None:
+    """Raise unless the managed skill and every hook it recorded are in place."""
+    target = _skill_dir(config_dir / "skills")
+    manifest = _manifest(target) if target.exists() else None
+    if manifest is None or not _owned_and_unchanged(target, manifest):
+        raise ValueError("The managed Specgate skill is missing or modified.")
+    settings = _read_settings(config_dir / "settings.json")
+    entries = manifest.get("hooks")
+    if not isinstance(entries, dict) or set(entries) != {
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PermissionRequest",
+    }:
+        raise ValueError("The managed Claude Code hooks are missing.")
+    hooks = settings.get("hooks", {})
+    if any(entry not in hooks.get(event, []) for event, entry in entries.items()):
+        raise ValueError("The managed Claude Code hooks are missing.")
+
+
+def hooks_installed(config_dir: Path) -> bool:
+    """Whether the managed Claude Code hooks are registered, as install left them.
+
+    Registered is not executed: this never shows that a hook ran.
+    """
+    try:
+        _require_managed_hooks(config_dir.expanduser().resolve())
+    except (OSError, TypeError, ValueError):
+        return False
+    return True
+
+
 async def diagnose_claude(
     project: Path,
     config_dir: Path,
@@ -301,19 +335,7 @@ async def diagnose_claude(
         raise ValueError("The project directory is unavailable.")
     config_dir = config_dir.expanduser().resolve()
     target = _skill_dir(config_dir / "skills")
-    manifest = _manifest(target) if target.exists() else None
-    if manifest is None or not _owned_and_unchanged(target, manifest):
-        raise ValueError("The managed Specgate skill is missing or modified.")
-    settings = _read_settings(config_dir / "settings.json")
-    entries = manifest.get("hooks")
-    if not isinstance(entries, dict) or set(entries) != {
-        "UserPromptSubmit",
-        "PreToolUse",
-    }:
-        raise ValueError("The managed Claude Code hooks are missing.")
-    hooks = settings.get("hooks", {})
-    if any(entry not in hooks.get(event, []) for event, entry in entries.items()):
-        raise ValueError("The managed Claude Code hooks are missing.")
+    _require_managed_hooks(config_dir)
     _require_user_mcp(config_dir, url)
     version = _run(claude_command, "--version")
     if version.returncode or not version.stdout.strip():
@@ -332,6 +354,7 @@ async def diagnose_claude(
         "hooks": {
             "UserPromptSubmit": "installed",
             "PreToolUse/AskUserQuestion": "installed",
+            "PermissionRequest": "installed",
         },
         "mcp": {
             "url": url,

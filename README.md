@@ -46,7 +46,7 @@ This package installs skills and an MCP client into the agents you already use. 
 - Your MCP host, your API key. Model keys stay on the server. This package never logs the credential.
 - If the MCP is down, the harness still runs. The decision stays in human review. One warning per session.
 
-Automatic advance stays off until the host operator installs a real calibration gate. Mock, replay and contract fixtures do not open it.
+A real evaluation advances only through the host gate: the confidence policy (`gate.basis=confidence_policy`, `calibrated=false`, an uncertainty filter that does not measure accuracy) or, when the operator installs one, a validated calibration manifest (`gate.basis=validated_manifest`). Mock, replay and contract fixtures never open it.
 
 ## Why a decision model
 
@@ -77,9 +77,9 @@ A question Jev can close from `CONTEXT.md` and the authorized roots comes back a
 
 `install` with no `--harness` detects what is on this machine and asks once per agent. Repeat installs keep foreign skills and config they do not own.
 
-Codex installs a native `UserPromptSubmit` hook and retains the controlled app-server client for structured questions. After installation or a changed hook command, review the hook in Codex `/hooks`; installation does not grant native trust. The prompt hook sends only the current prompt and the public Specgate bundle to the configured MCP. It consults Codex's enabled skills locally, checks installed revisions, and excludes disabled or modified skills. Personal catalogs, project files and native session metadata are not sent by this adapter. A remote review gate never becomes an automatic selection: the hook supplies its status instead. Doctor inspects installation without proving runtime execution or calibration. Install/update/uninstall preserve other hooks and refuse to overwrite a modified managed entry.
+Codex installs a native `UserPromptSubmit` hook and retains the controlled app-server client for structured questions. After installation or a changed hook command, review the hook in Codex `/hooks`; installation does not grant native trust. The prompt hook sends only the current prompt and the public Specgate bundle to the configured MCP. It consults Codex's enabled skills locally, checks installed revisions, and excludes disabled or modified skills. Personal catalogs, project files and native session metadata are not sent by this adapter. A skill the confidence policy approved can be selected without a manifest only when it is one of the public skills this package ships (or a byte-identical copy), and it loads only when this hook is installed and ran; any other result stays in review and the hook supplies its status instead. Doctor inspects installation without proving runtime execution or calibration. Install/update/uninstall preserve other hooks and refuse to overwrite a modified managed entry.
 
-Claude Code uses native `UserPromptSubmit` and `PreToolUse` hooks plus user-scoped `mcpServers.specgate` in `~/.claude.json`. Cursor writes `~/.cursor/mcp.json`. Grok Build merges `[mcp_servers.specgate]` into `~/.grok/config.toml` (and `~/.grok/mcp.json` if that file already exists); the wrapper still injects the key for the ACP client. Grok Bot has no public interception contract: after install, copy `~/.specgate/grok-bot/specgate/GROK_BOT.md` as a private skill and attach the Custom MCP in the product. Doctor reports that limit instead of pretending the roundtrip was tested.
+Claude Code uses native `UserPromptSubmit` and `PreToolUse` hooks plus user-scoped `mcpServers.specgate` in `~/.claude.json`. Without a manifest, its prompt hook loads a public Specgate skill that the confidence policy selected only while the managed hooks stay registered in `settings.json`; a personal or project skill, even one with a copied install record, stays a suggestion, and so does a skill that `skillOverrides` or a `Skill` deny rule hides from the model (unreadable settings hide every skill). Cursor writes `~/.cursor/mcp.json`. Grok Build merges `[mcp_servers.specgate]` into `~/.grok/config.toml` (and `~/.grok/mcp.json` if that file already exists); the wrapper still injects the key for the ACP client. Grok Bot has no public interception contract: after install, copy `~/.specgate/grok-bot/specgate/GROK_BOT.md` as a private skill and attach the Custom MCP in the product. Doctor reports that limit instead of pretending the roundtrip was tested.
 
 Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `DEV_DECISION_MCP_API_KEY` for old clients) into that process. Install also publishes those variables for every new shell and the graphical login session, reading the credential file each time. The key is not copied into shell rc files or the login agent. Restart the harness after install.
 
@@ -104,8 +104,11 @@ Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `D
 | `specgate install` | Detect harnesses, store the MCP key, install skills, wrappers and native MCP entries |
 | `specgate doctor` | One status line per harness. `--json` for the full report |
 | `specgate smoke` | Attached handshake + route + one mock tool. No paid inference |
+| `specgate flow` | Resume a delivery from grill to draft pull requests under the standing grant or an explicit draft authorization. No manifest needed |
 | `specgate update` | Explicit. Refresh managed skills and wrappers from this package |
 | `specgate uninstall` | Remove plugin-managed files only |
+
+`specgate flow request.json --host https://YOUR_MCP/mcp --adapter module:factory --authorize-jev` resumes a delivery from the state the host keeps: grill, research, spec, tickets and implementation, ending at draft pull requests. It does not need a calibration manifest. A stage advances only when its tool's predicate holds on a response whose `gate.basis` and binding (policy and recipe revision, tool, request and context revisions, provider and resolved model) this client checked against the request it sent; a response without `basis`, or with a field that differs, stays in review. External effects need the standing grant from `specgate setup`, with one exception: `--authorize-drafts` is an explicit human authorization to open the ticket draft pull requests. With it, opening a draft does not consult the grant (`draft_pr`) and the ticket verification skips the policy's automatic predicate, so pass it only when the person running the command authorizes those drafts. Spec and tickets still need the grant or a human approval of the exact revision. With or without the flag, the command never merges, deploys or force-pushes. The adapter is an installed Python module that supplies the harness callbacks, the trackers and the pull request publisher; it imports the models from `grill_contracts`, `spec_contracts`, `ticket_contracts` and `implementation_contracts`, because `grill`, `spec` and `tickets` exist only in the host. The command reads the key from `SPECGATE_MCP_API_KEY`.
 
 There is no auto-update. A failed install rolls back every destination in that transaction, including a harness that succeeded before a later one failed.
 
@@ -133,7 +136,7 @@ python3 -m venv .venv
 - Context sent to the MCP is the evidence you authorized for that call. Model provider keys never leave the server process.
 - The client talks to the host over HTTPS (HTTP only on loopback) and uses the system CAs.
 - No MCP, auth failure, or a protocol major mismatch: the harness continues and the decision stays in review.
-- `action=auto` is not permission to merge, deploy, or publish. Without a calibration manifest, `jev_decide` still returns `action=auto` for one real option strictly above 0.80. Verify, screen and find stay at `calibrated=false` and `auto_advance=false`.
+- `action=auto` is not permission to merge, deploy, or publish. Without a calibration manifest the four tools advance only when every confidence and every support, substance, relevance, existence and fit score is strictly above 0.80, the Decide winner has a probability above 0.50 and the Screen injection score is below 0.25, with `calibrated=false` and `gate.basis=confidence_policy`; 0.80 is an uncertainty filter, not accuracy. A manifest that is invalid, altered, revoked or bound to another provider or model keeps the decision in review.
 
 ## Uninstall
 
@@ -147,3 +150,52 @@ Removes the managed profile, credential, wrappers, Specgate MCP catalog entries 
 ## License
 
 [MIT](LICENSE)
+
+
+## Delegated approvals until draft PRs
+
+An explicit setup request can save one global grant for the worktrees, commands,
+repositories and MCP host of a delivery. Existing grants are reused. For example:
+
+```sh
+specgate setup --autonomy until_draft \
+  --allow-project /absolute/worktree \
+  --allow-host https://YOUR_MCP/mcp \
+  --allow-repository owner/repository \
+  --allow-command 'git -C /absolute/worktree status --short' \
+  --allow-file-edits --allow-publication spec \
+  --allow-publication tickets --allow-publication draft_pr \
+  --authorization-reference 'User delegates this delivery until draft PRs'
+```
+
+Repeat the scope flags to list all planned worktrees and exact commands in the
+same setup. New roots or destinations require an explicit scope update. Project
+and skill configuration cannot expand the grant. Revoke future automation with
+`specgate setup --autonomy manual`; the harness then handles approvals normally.
+
+Codex and Claude adapters implement `PermissionRequest`. The installer preserves
+other hooks. Codex requires its hooks capability and trust for the installed
+hook configuration. Review that configuration once in the harness; Specgate never
+writes its trust approval. Install/update and `doctor` show installation state,
+which does not prove a native event actually ran. A changed configuration may
+need trust again. See [Codex hook trust](https://learn.chatgpt.com/docs/hooks#review-and-trust-hooks)
+and [Claude PermissionRequest](https://code.claude.com/docs/en/hooks#permissionrequest).
+
+Within the grant, a real Jev decision strictly above the configured threshold
+can allow an action. An unavailable model, incomplete action or revoked grant
+retains it. The workflow collects these exceptions for a single review. Merge,
+deploy and history rewriting remain outside this grant. Each publication also
+checks the current grant immediately before its external effect.
+
+The functional demonstration exercised the adapter handlers with isolated
+configuration and real Jev. An allowed read-only Git command ran once; an
+out-of-scope action and in-flight revocation produced denial. Three responses
+validated against Codex 0.157.1's official schema. Repeated setup and uninstall
+preserved unrelated hooks. The Codex setup CLI was a fixture; the installed
+Codex engine did not emit the events. Global installation and trust were not
+changed by that demonstration.
+
+No statistical calibration is established by these observations or by high
+scores. Automated spec/ticket review still requires its independent verification
+gates. The complete resumable workflow and bounded adjudication are separate
+work from these approval adapters; `specgate flow` composes them.

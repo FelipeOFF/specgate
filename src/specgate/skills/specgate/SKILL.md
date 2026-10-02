@@ -94,11 +94,21 @@ ao mesmo cliente MCP usado pelas demais avaliações.
 As instruções integrais da shortlist passam por `jev_screen` e por adequação
 em `jev_find`, com o contexto e as regras do projeto. `evaluations` preserva os
 resultados e a política de cada etapa. Ausência, empate ou pendência exige
-revisão; uma indicação em `candidate` também permanece em revisão enquanto o
-gate não estiver calibrado. O mock não prova compatibilidade semântica.
+revisão; uma indicação em `candidate` também permanece em revisão, salvo sob
+manifesto validado ou, sem manifesto, quando a skill é pública
+(`candidate.public`, `gate_basis=confidence_policy`, sem calibração). O catálogo
+pessoal ou do projeto exige um escopo separado. O mock não prova compatibilidade
+semântica.
 
 O adapter deve carregar `candidate.instructions` e chamar
 `confirm_skill_loaded(indication, skill_id, revision, authorized_roots=...,
 disabled_ids=...)` com o ID e a revisão efetivamente carregados. A função
 reconfere autorização, origem e revisão do arquivo. `loaded=true` registra apenas
 essa confirmação explícita; não significa execução nem autorização automática.
+Sem `gate_basis=validated_manifest`, `loaded` só é registrado com
+`hook=NativeHook(...)`, montado pelo handler do hook nativo do harness quando ele
+está instalado e executou naquele carregamento. Uma indicação em revisão
+(`origin=review`, que não prova revisão) também carrega com
+`review=HumanReview(skill_id, revision)`, montada só quando uma pessoa escolheu
+aquela skill e revisão; ela não substitui o hook numa seleção automática. Sem essa
+evidência `loaded` não é registrado e `loading` diz o motivo.

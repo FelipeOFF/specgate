@@ -15,6 +15,21 @@ from specgate.shared.domain import inputs
 from specgate.slices import decide, find, screen, verify
 
 TOOLS = ("jev_verify", "jev_screen", "jev_find", "jev_decide")
+# Which authority produced a gate. `confidence_policy` is a heuristic filter with
+# no validation behind it; only `validated_manifest` rests on a real validation.
+BASIS_POLICY = "confidence_policy"
+BASIS_MANIFEST = "validated_manifest"
+PROVENANCE_KEYS = ("backend", "provider", "requested_model", "resolved_model")
+POLICY_BINDING_KEYS = frozenset(
+    {
+        "tool",
+        "policy",
+        "recipe",
+        "request_revision",
+        "context_revision",
+        *PROVENANCE_KEYS,
+    }
+)
 
 
 def digest(value: Any) -> str:
@@ -24,6 +39,8 @@ def digest(value: Any) -> str:
 
 
 class GatePolicy(BaseModel):
+    """Every cutoff compares strictly above: a score equal to it stays in review."""
+
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
     verify_confidence: float = Field(default=0.8, ge=0.8, lt=1)
     verify_probability: float = Field(default=0.8, ge=0, le=1)
@@ -63,6 +80,71 @@ def recipe_versions() -> dict[str, str]:
     }
 
 
+def recommendation_basis(decision: dict[str, Any]) -> str | None:
+    """The basis a decision reports when `calibrated` agrees with it, else None.
+
+    Only a validated manifest calibrates; the confidence policy never does.
+    """
+    gate = decision.get("gate")
+    basis = gate.get("basis") if isinstance(gate, dict) else None
+    agrees = (basis, decision.get("calibrated")) in {
+        (BASIS_MANIFEST, True),
+        (BASIS_POLICY, False),
+    }
+    return str(basis) if agrees else None
+
+
+def provider_provenance(tool: str, calls: Any) -> dict[str, str] | None:
+    """The one provider and model every call of an evaluation ran on, if complete.
+
+    A missing field, a missing call or two calls on different revisions leave no
+    single provenance to bind, so the caller keeps the result in review.
+    """
+    expected = 2 if tool == "jev_find" else 1
+    if not isinstance(calls, list) or len(calls) != expected:
+        return None
+    rows = [
+        {key: call.get(key) for key in PROVENANCE_KEYS}
+        for call in calls
+        if isinstance(call, dict)
+    ]
+    if len(rows) != expected or any(row != rows[0] for row in rows):
+        return None
+    if not all(isinstance(value, str) and value for value in rows[0].values()):
+        return None
+    return {key: str(value) for key, value in rows[0].items()}
+
+
+def policy_scores(tool: str, result: dict[str, Any]) -> dict[str, Any]:
+    """The scores the predicate compares, so a reviewer sees what a cutoff filtered."""
+    try:
+        if tool == "jev_verify":
+            return {
+                row["id"]: {
+                    "confidence": row["confidence"],
+                    "supports": row["probabilities"]["supports"],
+                }
+                for row in result["verdicts"]
+            }
+        if tool == "jev_screen":
+            return dict(result["probabilities"])
+        if tool == "jev_find":
+            return {
+                "confidence": result["confidence"],
+                "exists": result["exists"],
+                "fit": result["top"][0]["fit"] if result["top"] else None,
+            }
+        if tool == "jev_decide":
+            selected = result["selected_option"]
+            return {
+                "confidence": result["confidence"],
+                "selected_probability": result["probabilities"].get(selected),
+            }
+    except (KeyError, IndexError, TypeError, AttributeError):
+        pass
+    return {}
+
+
 def _probability(value: Any) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise TypeError("Probabilidade inválida.")
@@ -90,7 +172,7 @@ def candidate_eligible(tool: str, result: dict[str, Any], policy: GatePolicy) ->
                 and row.get("would_auto_accept") is True
                 and _probability(row["confidence"]) > policy.verify_confidence
                 and _probability(row["probabilities"]["supports"])
-                >= policy.verify_probability
+                > policy.verify_probability
                 and _unique_maximum(
                     row["probabilities"]["supports"],
                     [
@@ -106,8 +188,8 @@ def candidate_eligible(tool: str, result: dict[str, Any], policy: GatePolicy) ->
             return bool(
                 result["decision"] == "pass"
                 and _probability(probs["injection"]) < policy.screen_max_injection
-                and _probability(probs["substance"]) >= policy.screen_min_substance
-                and _probability(probs["relevance"]) >= policy.screen_min_relevance
+                and _probability(probs["substance"]) > policy.screen_min_substance
+                and _probability(probs["relevance"]) > policy.screen_min_relevance
             )
         if tool == "jev_find":
             return bool(
@@ -115,8 +197,8 @@ def candidate_eligible(tool: str, result: dict[str, Any], policy: GatePolicy) ->
                 and result["top"]
                 and result["ranking_choice"] == result["top"][0]["id"]
                 and _probability(result["confidence"]) > policy.find_confidence
-                and _probability(result["exists"]) >= policy.find_min_exists
-                and _probability(result["top"][0]["fit"]) >= policy.find_min_fit
+                and _probability(result["exists"]) > policy.find_min_exists
+                and _probability(result["top"][0]["fit"]) > policy.find_min_fit
                 and _unique_maximum(
                     result["ranking_probabilities"][result["top"][0]["id"]],
                     [
@@ -138,7 +220,7 @@ def candidate_eligible(tool: str, result: dict[str, Any], policy: GatePolicy) ->
             return bool(
                 result["reason"] == "real_calibration_pending"
                 and _probability(result["confidence"]) > policy.decide_confidence
-                and selected_probability >= policy.decide_min_probability
+                and selected_probability > policy.decide_min_probability
                 and _unique_maximum(selected_probability, alternatives)
             )
     except (KeyError, IndexError, TypeError, ValueError):
