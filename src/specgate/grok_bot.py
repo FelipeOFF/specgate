@@ -20,6 +20,7 @@ from specgate.codex_setup import (
     _validate_url,
     _write_marker,
 )
+from specgate.gate_policy import recommendation_basis
 from specgate.mcp_catalog import merge_json_mcp, remove_json_mcp
 from specgate.transport import MCPTransportError, list_tools
 
@@ -160,7 +161,7 @@ class GrokBotCooperativeFlow:
             and result.get("execution_authorized") is False
             and isinstance(decision, dict)
             and decision.get("mode") == "real"
-            and decision.get("calibrated") is True
+            and recommendation_basis(decision) is not None
             and decision.get("auto_advance") is True
             and selected in {option_id for option_id, _ in question.options}
         ):

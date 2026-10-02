@@ -46,6 +46,14 @@ GROK_BUILD_MARKERS = (GROK_BUILD_MARKER, LEGACY_GROK_BUILD_MARKER)
 SKILL_NAMES = (SKILL, LEGACY_SKILL)
 
 
+def packaged_skills() -> Path:
+    """The public skills this package ships; no environment can redirect it."""
+    packaged = Path(__file__).with_name("skills")
+    return (
+        packaged if packaged.is_dir() else Path(__file__).resolve().parents[2] / "skill"
+    )
+
+
 def env_first(*names: str, environ: Mapping[str, str] | None = None) -> str:
     env = environ or os.environ
     for name in names:

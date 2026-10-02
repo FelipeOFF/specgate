@@ -512,6 +512,13 @@ def _codex_hook_settings(
         entry = previous.get("entry")
         if entry not in settings.get("hooks", {}).get("UserPromptSubmit", []):
             raise ValueError("O hook Codex gerenciado foi modificado ou removido.")
+        approval = previous.get("permission_entry")
+        if approval is not None and approval not in settings.get("hooks", {}).get(
+            "PermissionRequest", []
+        ):
+            raise ValueError(
+                "O hook de aprovação Codex gerenciado foi modificado ou removido."
+            )
         return settings, entry
     return settings, None
 
@@ -531,6 +538,12 @@ def _remove_codex_hook(profile: dict[str, Any]) -> str:
     entries.remove(entry)
     if not entries:
         del settings["hooks"]["UserPromptSubmit"]
+    approval = previous.get("permission_entry")
+    if approval is not None:
+        approvals = settings["hooks"]["PermissionRequest"]
+        approvals.remove(approval)
+        if not approvals:
+            del settings["hooks"]["PermissionRequest"]
     _write_settings(path, settings)
     return "removed"
 
@@ -630,7 +643,24 @@ def install_public_codex(
         entries[entries.index(previous_hook)] = entry
     else:
         entries.append(entry)
-    profile["codex_hook"] = {"path": str(hooks_path), "entry": entry}
+    permission_entry = {
+        "hooks": [{**entry["hooks"][0], "statusMessage": "Specgate action review"}]
+    }
+    permission_entries = settings["hooks"].setdefault("PermissionRequest", [])
+    previous_permission = ((previous_profile or {}).get("codex_hook") or {}).get(
+        "permission_entry"
+    )
+    if previous_permission is not None:
+        permission_entries[permission_entries.index(previous_permission)] = (
+            permission_entry
+        )
+    else:
+        permission_entries.append(permission_entry)
+    profile["codex_hook"] = {
+        "path": str(hooks_path),
+        "entry": entry,
+        "permission_entry": permission_entry,
+    }
     transaction = _PathTransaction(
         [
             profile_path,
@@ -903,12 +933,16 @@ async def doctor_public_codex(
     report["native_hook"] = {
         "installed": entry is not None,
         "event": "UserPromptSubmit",
+        "permission_request": bool(
+            (profile.get("codex_hook") or {}).get("permission_entry")
+        ),
         "trust": "requires_harness_confirmation",
         "runtime_verified": False,
         "catalog": "enabled_public_specgate_bundle",
     }
     report["limitations"].append(
-        "Native prompt routing requires trusted hooks and calibrated remote gates; "
+        "Native prompt routing requires trusted hooks and a remote gate that approves "
+        "the selection, by confidence policy or validated manifest; "
         "doctor does not submit a prompt or prove automatic selection."
     )
     if entry is None:

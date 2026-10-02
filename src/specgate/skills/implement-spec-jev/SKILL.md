@@ -39,4 +39,7 @@ from unrelated repositories.
 Stop at draft pull requests. Do not merge, remove draft status, deploy, rewrite
 published history, or bypass checks. Return authorization, missing adapters,
 ambiguous publications, invalid worktrees, and destructive recovery choices to
-human review.
+a consolidated exception report. Reuse valid delegated authority for routine
+actions and draft publication. Continue independent branches before asking the
+human for the smallest missing decision; never change a technical gate to avoid
+that decision.

@@ -3,6 +3,8 @@
 import json
 from collections.abc import Awaitable, Callable, Collection, Iterator
 from copy import deepcopy
+from dataclasses import dataclass
+from hashlib import sha256
 from math import isclose
 from pathlib import Path
 from typing import Any
@@ -16,10 +18,51 @@ from specgate.context import (
     discover_skill_catalog,
     read_skill,
 )
+from specgate.gate_policy import BASIS_MANIFEST, BASIS_POLICY, PROVENANCE_KEYS
+from specgate.product import (
+    CURSOR_MARKERS,
+    GROK_BUILD_MARKERS,
+    INSTALL_MARKERS,
+    PUBLIC_MARKERS,
+)
 from specgate.shared.domain.inputs import checked_text
 
 # Leave room for the explicit project context within the 64 KB MCP payload limit.
 MAX_CANDIDATE_BYTES = 16000
+_INSTALL_MARKERS = (
+    *PUBLIC_MARKERS,
+    *INSTALL_MARKERS,
+    *CURSOR_MARKERS,
+    *GROK_BUILD_MARKERS,
+)
+
+
+@dataclass(frozen=True)
+class NativeHook:
+    """What a harness adapter observed from its own native hook for one skill load.
+
+    Only the hook handler of the harness builds this. Routing under the confidence
+    policy never does: the policy cannot tell that a hook ran.
+    """
+
+    harness: str
+    event: str
+    installed: bool
+    executed: bool
+    skill_id: str
+    revision: str
+
+
+@dataclass(frozen=True)
+class HumanReview:
+    """A person's explicit choice of one skill revision, as an adapter recorded it.
+
+    Only an adapter step where a person chose this skill builds it. Routing never
+    does: `origin=review` means a review is pending, not that anyone did it.
+    """
+
+    skill_id: str
+    revision: str
 
 
 def _batches(skills: list[SkillSource]) -> Iterator[list[SkillSource]]:
@@ -43,6 +86,69 @@ def _batches(skills: list[SkillSource]) -> Iterator[list[SkillSource]]:
         yield batch
 
 
+def _skill_files(directory: Path) -> dict[str, str] | None:
+    """Digest of every file of a skill, aside from what installers add."""
+    try:
+        return {
+            file.relative_to(directory).as_posix(): sha256(
+                file.read_bytes()
+            ).hexdigest()
+            for file in sorted(directory.rglob("*"))
+            if file.is_file() and file.name not in _INSTALL_MARKERS
+        }
+    except OSError:
+        return None
+
+
+def _is_public(source: SkillSource, public_roots: Collection[Path]) -> bool:
+    """Whether this is a skill of the public bundle, or a byte-identical copy of one.
+
+    An install record is no proof: anyone can write one next to a skill of their own.
+    """
+    directory = Path(source.source).parent
+    for root in public_roots:
+        reference = root.resolve() / directory.name
+        if directory.is_relative_to(root.resolve()):
+            return True
+        files = _skill_files(directory)
+        if (
+            (reference / "SKILL.md").is_file()
+            and files is not None
+            and files == _skill_files(reference)
+            and files.get("SKILL.md") == source.revision
+        ):
+            return True
+    return False
+
+
+def _approved_basis(evaluations: list[dict[str, Any]]) -> str | None:
+    """The one gate basis under which every evaluation advanced, else None."""
+    bases = {
+        item["result"].get("gate_basis")
+        if item["result"].get("action") == "auto"
+        and item["result"].get("auto_advance") is True
+        else None
+        for item in evaluations
+    }
+    return (
+        bases.pop()
+        if len(bases) == 1 and bases <= {BASIS_MANIFEST, BASIS_POLICY}
+        else None
+    )
+
+
+def _one_provider_and_model(evaluations: list[dict[str, Any]]) -> bool:
+    """Every policy-bound evaluation ran on the same provider and resolved model."""
+    runs = set()
+    for item in evaluations:
+        gate = (item["result"].get("decision") or {}).get("gate")
+        binding = gate.get("policy_binding") if isinstance(gate, dict) else None
+        if not isinstance(binding, dict):
+            return False
+        runs.add(tuple(binding.get(key) for key in PROVENANCE_KEYS))
+    return len(runs) == 1
+
+
 async def route_skills(
     request: ReviewRequest,
     project: Path,
@@ -51,6 +157,7 @@ async def route_skills(
     *,
     authorized_roots: list[Path],
     disabled_ids: Collection[str] = (),
+    public_roots: Collection[Path] = (),
     request_context: Callable[[ContextResult], Awaitable[ContextUpdate]] | None = None,
     transport: str = "streamable",
     ca_file: Path | None = None,
@@ -63,6 +170,9 @@ async def route_skills(
     Each batch contributes its returned top candidates. Evaluate the next one when
     a candidate fails; once one fits, only description ties require another check.
     Coverage names skipped candidates. Only backend-approved evaluations may auto-select.
+    Under a validated manifest any authorized skill may be selected. Under the
+    confidence policy only a public skill may: one under `public_roots`, the public
+    bundle, or a byte-identical copy of one. Anything else stays a suggestion.
     """
     if request.tool != "jev_find":
         raise ValueError("O roteamento exige um pedido jev_find.")
@@ -302,22 +412,106 @@ async def route_skills(
     except (OSError, ValueError) as error:
         coverage["unexamined"].append({"id": source.id, "reason": str(error)})
         return {**result, "status": "incomplete", "reason": str(error)}
-    automated = bool(result["evaluations"]) and all(
-        evaluation["result"].get("action") == "auto"
-        and evaluation["result"].get("auto_advance") is True
-        for evaluation in result["evaluations"]
+    basis = _approved_basis(result["evaluations"])
+    public = _is_public(source, public_roots)
+    candidate["public"] = public
+    consistent = basis != BASIS_POLICY or _one_provider_and_model(result["evaluations"])
+    automated = basis == BASIS_MANIFEST or (
+        basis == BASIS_POLICY and public and consistent
     )
+    if automated and basis == BASIS_MANIFEST:
+        reason = "Skill selecionada por gates calibrados; o harness ainda deve confirmar o carregamento."
+    elif automated:
+        reason = (
+            "Skill pública selecionada pela política de confiança, sem calibração; "
+            "o hook nativo do harness ainda deve confirmar o carregamento."
+        )
+    elif basis == BASIS_POLICY and not public:
+        reason = (
+            "Sem manifesto, só uma skill pública do Specgate pode ser selecionada; "
+            "o catálogo pessoal ou do projeto exige um escopo separado."
+        )
+    elif basis == BASIS_POLICY:
+        reason = (
+            "As avaliações usaram provider ou modelo diferentes; refaça o roteamento."
+        )
+    else:
+        reason = "Indicação pendente de revisão e confirmação de carregamento pelo harness; consulte a política das avaliações."
     return {
         **result,
         "candidate": candidate,
+        "gate_basis": basis,
         "action": "auto" if automated else "needs_human",
         "auto_advance": automated,
         "origin": "automated" if automated else "review",
         "status": "selected" if automated else "suggested",
-        "reason": "Skill selecionada por gates calibrados; o harness ainda deve confirmar o carregamento."
-        if automated
-        else "Indicação pendente de revisão e confirmação de carregamento pelo harness; consulte a política das avaliações.",
+        "reason": reason,
     }
+
+
+_HOOK_REASONS = {
+    "absent": (
+        "O hook nativo do harness não registrou este carregamento; "
+        "a política de confiança não cria esse evento."
+    ),
+    "not_installed": "O hook nativo não está instalado no harness.",
+    "not_executed": "O hook nativo está instalado, mas não executou neste carregamento.",
+    "mismatch": "O evento do hook não corresponde à skill e à revisão selecionadas.",
+}
+_REVIEW_REASONS = {
+    "absent": (
+        "A indicação segue em revisão: o carregamento exige o hook nativo ou a "
+        "revisão humana explícita desta skill e revisão."
+    ),
+    "mismatch": "A revisão humana não corresponde à skill e à revisão selecionadas.",
+}
+
+
+def _hook_loading(
+    hook: NativeHook | None, skill_id: str, revision: str
+) -> dict[str, Any]:
+    """Whether the native hook confirms this exact load, and why not if it does not."""
+    if hook is None:
+        return {"confirmed": False, "hook": "absent"}
+    if not hook.installed:
+        return {"confirmed": False, "hook": "not_installed"}
+    if not hook.executed:
+        return {"confirmed": False, "hook": "not_executed"}
+    if (hook.skill_id, hook.revision) != (skill_id, revision):
+        return {"confirmed": False, "hook": "mismatch"}
+    return {"confirmed": True, "hook": {"harness": hook.harness, "event": hook.event}}
+
+
+def _loading(
+    indication: dict[str, Any],
+    hook: NativeHook | None,
+    review: HumanReview | None,
+    skill_id: str,
+    revision: str,
+) -> dict[str, Any]:
+    """The evidence that confirms this exact load, or why there is none.
+
+    A person's review cannot stand in for the hook of a selection the policy made on
+    its own: nobody reviewed that one.
+    """
+    loading = _hook_loading(hook, skill_id, revision)
+    if (
+        loading["confirmed"]
+        or review is None
+        or indication.get("origin") == "automated"
+    ):
+        return loading
+    if (review.skill_id, review.revision) != (skill_id, revision):
+        return {**loading, "review": "mismatch"}
+    return {"confirmed": True, "review": "human"}
+
+
+def _unconfirmed_reason(indication: dict[str, Any], loading: dict[str, Any]) -> str:
+    if loading.get("review") == "mismatch":
+        return _REVIEW_REASONS["mismatch"]
+    if indication.get("origin") != "automated" and loading["hook"] == "absent":
+        return _REVIEW_REASONS["absent"]
+    return _HOOK_REASONS[loading["hook"]]
 
 
 def confirm_skill_loaded(
@@ -327,8 +521,16 @@ def confirm_skill_loaded(
     *,
     authorized_roots: list[Path],
     disabled_ids: Collection[str] = (),
+    hook: NativeHook | None = None,
+    review: HumanReview | None = None,
 ) -> dict[str, Any]:
-    """Record an explicit harness acknowledgment without authorizing execution."""
+    """Record a harness confirmation without authorizing execution.
+
+    Only an indication under a validated manifest loads on the adapter's own word.
+    Anything else loads when the harness's native hook is installed and ran for this
+    exact load; an indication that routing left in review also loads with a
+    `HumanReview` of this exact skill and revision. `origin=review` is no review.
+    """
     result = deepcopy(indication)
     candidate = result.get("candidate")
     if (
@@ -366,6 +568,20 @@ def confirm_skill_loaded(
             "status": "incomplete",
             "reason": str(error),
         }
+    if result.get("gate_basis") != BASIS_MANIFEST:
+        loading = _loading(result, hook, review, skill_id, revision)
+        if not loading["confirmed"]:
+            return {
+                **result,
+                "candidate": None,
+                "action": "needs_human",
+                "auto_advance": False,
+                "execution_authorized": False,
+                "status": "incomplete",
+                "reason": _unconfirmed_reason(result, loading),
+                "loading": loading,
+            }
+        result["loading"] = loading
     candidate["loaded"] = True
     result["execution_authorized"] = False
     return result

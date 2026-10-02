@@ -17,7 +17,7 @@ from specgate.cursor_client import (
     CursorQuestionRequest,
     CursorSkill,
 )
-from specgate.routing import confirm_skill_loaded
+from specgate.routing import HumanReview, confirm_skill_loaded
 
 ASK_USER_QUESTION_METHOD = "x.ai/ask_user_question"
 VERIFIED_QUESTION_AGENT_VERSIONS = frozenset({"1.0.24"})
@@ -40,17 +40,29 @@ def grok_build_skill_from_indication(
     *,
     authorized_roots: list[Path],
     disabled_ids: Sequence[str] = (),
+    review: HumanReview | None = None,
 ) -> GrokBuildSkill:
-    """Recheck and load the exact skill revision reviewed by routing."""
+    """Recheck and load the exact skill revision reviewed by routing.
+
+    Grok Build has no native hook: outside a validated manifest the skill loads only with the
+    `review` of the person who chose this exact revision.
+    """
     confirmed = confirm_skill_loaded(
         indication,
         skill_id,
         revision,
         authorized_roots=authorized_roots,
         disabled_ids=disabled_ids,
+        review=review,
     )
     candidate = confirmed.get("candidate")
     if not isinstance(candidate, dict) or candidate.get("loaded") is not True:
+        if isinstance(confirmed.get("loading"), dict):
+            raise ValueError(
+                "Loading this indication needs a native hook or a human review of "
+                "this exact revision, and Grok Build has no hook; pass the review of the "
+                "person who chose it."
+            )
         raise ValueError("The selected skill does not match the reviewed revision.")
     instructions = candidate.get("instructions")
     if not isinstance(instructions, str) or not instructions.strip():

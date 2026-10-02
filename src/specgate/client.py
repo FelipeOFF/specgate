@@ -18,8 +18,19 @@ from specgate.context import (
     build_context,
     discover_skills,
 )
-from specgate.gate_policy import GatePolicy, candidate_eligible, recipe_versions
-from specgate.recipe_inputs import request_revision
+from specgate.gate_policy import (
+    BASIS_MANIFEST,
+    BASIS_POLICY,
+    POLICY_BINDING_KEYS,
+    PROVENANCE_KEYS,
+    GatePolicy,
+    candidate_eligible,
+    policy_scores,
+    provider_provenance,
+    recipe_versions,
+)
+from specgate.payload import PayloadTooLarge, oversize
+from specgate.recipe_inputs import recipe_arguments, request_revision
 from specgate.shared.domain.decisions import question_revision
 from specgate.shared.domain.inputs import Item, checked_text, closed_gate_review
 from specgate.transport import MCPTransportError, call_tool
@@ -81,6 +92,213 @@ def _review_reason(decision: dict[str, Any], arguments: dict[str, Any]) -> str:
     if named:
         return named
     return "A avaliação exige revisão humana; consulte a política do gate."
+
+
+def _accepted_reason(basis: Any) -> str:
+    if basis == BASIS_MANIFEST:
+        return (
+            "Recomendação aceita pelo manifesto de calibração validado; "
+            "não autoriza efeitos externos."
+        )
+    return (
+        "Recomendação aceita pela política de confiança, sem calibração: o limiar "
+        "filtra incerteza e não mede acurácia. Não autoriza efeitos externos."
+    )
+
+
+def _manifest_bound(gate: dict[str, Any], tool: str, policy: GatePolicy) -> bool:
+    binding = gate.get("binding")
+    return bool(
+        gate.get("artifact_revision")
+        and gate.get("report_sha256")
+        and isinstance(binding, dict)
+        and binding.get("tool") == tool
+        and binding.get("policy") == policy.revision
+        and binding.get("recipe") == recipe_versions()[tool]
+    )
+
+
+def _policy_binding_intact(
+    decision: dict[str, Any], gate: dict[str, Any], tool: str, policy: GatePolicy
+) -> bool:
+    """The part of a policy binding a client confirms without the request that was sent."""
+    binding = gate.get("policy_binding")
+    if not isinstance(binding, dict) or set(binding) != POLICY_BINDING_KEYS:
+        return False
+    provenance = provider_provenance(tool, decision.get("provider_calls"))
+    return bool(
+        gate.get("reason") == decision.get("reason") == "confidence_policy_satisfied"
+        and not gate.get("artifact_revision")
+        and not gate.get("report_sha256")
+        and gate.get("binding") is None
+        # The host may not relax the cutoffs of the policy this client ships with.
+        and policy == GatePolicy()
+        and binding["tool"] == tool
+        and binding["policy"] == policy.revision
+        and binding["recipe"] == recipe_versions()[tool]
+        and binding["request_revision"] == decision.get("request_revision")
+        and binding["context_revision"] == decision.get("context_revision")
+        and provenance is not None
+        and provenance == {key: binding[key] for key in PROVENANCE_KEYS}
+    )
+
+
+def _policy_bound(
+    decision: dict[str, Any],
+    gate: dict[str, Any],
+    tool: str,
+    arguments: dict[str, Any],
+    context: ContextPacket,
+    policy: GatePolicy,
+) -> bool:
+    """Confirm the policy-basis binding against this request, not the host's word."""
+    return bool(
+        _policy_binding_intact(decision, gate, tool, policy)
+        and gate["policy_binding"]["request_revision"]
+        == request_revision(tool, arguments)
+        and gate["policy_binding"]["context_revision"] == context.revision
+    )
+
+
+def automatic_decision_valid(
+    decision: dict[str, Any],
+    tool: str,
+    arguments: dict[str, Any],
+    context: ContextPacket,
+) -> bool:
+    """Validate the host's recommendation gate against this exact request/context."""
+    try:
+        gate = decision["gate"]
+        policy = GatePolicy.model_validate(gate["policy"])
+        # A response without `basis` predates this contract: fail closed.
+        basis = gate["basis"]
+        if basis == BASIS_MANIFEST:
+            bound, calibrated = _manifest_bound(gate, tool, policy), True
+        elif basis == BASIS_POLICY:
+            bound = _policy_bound(decision, gate, tool, arguments, context, policy)
+            calibrated = False
+        else:
+            return False
+        return bool(
+            bound
+            and decision.get("mode") == "real"
+            and decision.get("calibrated") is calibrated
+            and decision.get("auto_advance") is True
+            and gate["passed"] is True
+            and gate["scope"] == "recommendation"
+            and gate["execution_authorized"] is False
+            and decision.get("tool") == tool
+            and decision.get("context_revision") == context.revision
+            and decision.get("request_revision") == request_revision(tool, arguments)
+            and not arguments.get("requires_authorization")
+            and not arguments.get("missing_personal_fact")
+            and arguments.get("question_type", "single_choice") == "single_choice"
+            and candidate_eligible(
+                tool,
+                {
+                    **decision,
+                    "action": "review",
+                    "reason": "real_calibration_pending",
+                },
+                policy,
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+# The gate reason of a recommendation this client did not confirm against its request.
+UNCONFIRMED = "client_binding_unconfirmed"
+# The gate reason of a verification that kept rows another authority judged.
+MIXED = "mixed_verification_gates"
+_JUDGE_KEYS = ("policy", "recipe", "backend", "provider", "requested_model", "resolved_model")
+
+
+def _text(value: Any) -> str | None:
+    """A stored field as part of an authority: hashable, and never a structure."""
+    return value if isinstance(value, str) else None
+
+
+def gate_authority(result: dict[str, Any]) -> tuple[Any, ...] | None:
+    """Who judged a result: its basis, and the manifest or the policy-bound judge.
+
+    The request and context revisions follow the input, not the authority, so they
+    stay out. None names no authority: a result without a gate, from a host that
+    predates `basis`, one this client refused to confirm, or one that mixes the rows
+    of several judges: the last judge stamped on it would vouch for rows it never read.
+    """
+    gate = result.get("gate")
+    if not isinstance(gate, dict):
+        return None
+    basis = gate.get("basis")
+    if not isinstance(basis, str) or gate.get("reason") in {UNCONFIRMED, MIXED}:
+        return None
+    if basis == BASIS_MANIFEST:
+        return basis, _text(gate.get("artifact_revision"))
+    binding = gate.get("policy_binding")
+    if not isinstance(binding, dict):
+        return basis, None
+    return basis, tuple(_text(binding.get(key)) for key in _JUDGE_KEYS)
+
+
+def confirmed_result(
+    result: dict[str, Any], tool: str, arguments: dict[str, Any]
+) -> dict[str, Any]:
+    """Keep a recommendation open only when this client confirmed it for its request.
+
+    The host's `auto_advance` is its own word. Where the request and the context are
+    known, the client checks the response against them and closes what it cannot
+    confirm. The scores stay untouched, so the claims keep their verdicts.
+    """
+    if result.get("auto_advance") is not True:
+        return result
+    try:
+        context = recipe_arguments(tool, arguments).get("context")
+        confirmed = context is not None and automatic_decision_valid(
+            result, tool, arguments, context
+        )
+    except (KeyError, TypeError, ValueError):
+        confirmed = False
+    if confirmed:
+        return result
+    gate = result.get("gate")
+    return {
+        **result,
+        "action": "review",
+        "auto_advance": False,
+        "gate": {**(gate if isinstance(gate, dict) else {}), "passed": False, "reason": UNCONFIRMED},
+    }
+
+
+def policy_verification_intact(
+    result: dict[str, Any], context_revision: str | None
+) -> bool:
+    """Whether a stored policy-basis Verify still holds, from what it kept alone.
+
+    The request and the context were confirmed when it was judged. What is left
+    to check is that the binding still names this client's policy and recipe and
+    the context the verification stored, and that the stored scores clear the
+    same predicate again.
+    """
+    try:
+        gate = result["gate"]
+        policy = GatePolicy.model_validate(gate["policy"])
+        return bool(
+            context_revision
+            and result.get("context_revision") == context_revision
+            and result.get("tool") == "jev_verify"
+            and result.get("mode") == "real"
+            and gate["scope"] == "recommendation"
+            and gate["execution_authorized"] is False
+            and _policy_binding_intact(result, gate, "jev_verify", policy)
+            and candidate_eligible(
+                "jev_verify",
+                {**result, "action": "review", "reason": "real_calibration_pending"},
+                policy,
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 async def review_request(
@@ -171,9 +389,10 @@ async def review_request(
         arguments["context"] = asdict(context.packet)
         try:
             checked_text(json.dumps(arguments, ensure_ascii=False, allow_nan=False))
-        except ValueError:
+        except ValueError as error:
             reason = "O contexto excede o orçamento do piloto; selecione fontes menores sem omitir evidências necessárias."
             packet = replace(context.packet, gaps=(*context.packet.gaps, reason))
+            overflow = oversize(error)
             return {
                 **result,
                 "action": "needs_human",
@@ -181,6 +400,7 @@ async def review_request(
                 "context": asdict(packet),
                 "context_revision": packet.revision,
                 "question": _human_question(packet),
+                **({"error": overflow.result()["error"]} if overflow else {}),
             }
         try:
             response = await call_tool(
@@ -212,6 +432,13 @@ async def review_request(
             raise ValueError(
                 "O MCP não retornou uma decisão válida; confira o pedido e as evidências."
             )
+        if overflow := PayloadTooLarge.from_result(response.structured_content):
+            return {
+                **result,
+                "action": "needs_human",
+                "reason": str(overflow),
+                "error": overflow.result()["error"],
+            }
         decision = response.structured_content
         automatic = decision.get("action") == "auto"
         valid_policy = (
@@ -226,54 +453,9 @@ async def review_request(
             )
         )
         if automatic:
-            try:
-                gate = decision["gate"]
-                policy = GatePolicy.model_validate(gate["policy"])
-                binding = gate.get("binding")
-                exam_bound = bool(
-                    gate.get("artifact_revision")
-                    and gate.get("report_sha256")
-                    and isinstance(binding, dict)
-                    and binding.get("tool") == original_tool
-                    and binding.get("policy") == policy.revision
-                    and binding.get("recipe") == recipe_versions()[original_tool]
-                )
-                confidence_bound = bool(
-                    original_tool == "jev_decide"
-                    and gate.get("reason") == "confidence_policy_satisfied"
-                    and decision.get("reason") == "confidence_policy_satisfied"
-                    and not gate.get("artifact_revision")
-                    and not gate.get("report_sha256")
-                    and binding is None
-                )
-                valid_policy = bool(
-                    decision.get("mode") == "real"
-                    and decision.get("calibrated") is True
-                    and decision.get("auto_advance") is True
-                    and gate["passed"] is True
-                    and gate["scope"] == "recommendation"
-                    and gate["execution_authorized"] is False
-                    and (exam_bound or confidence_bound)
-                    and decision.get("tool") == original_tool
-                    and decision.get("context_revision") == context.packet.revision
-                    and decision.get("request_revision")
-                    == request_revision(original_tool, arguments)
-                    and not arguments.get("requires_authorization")
-                    and not arguments.get("missing_personal_fact")
-                    and arguments.get("question_type", "single_choice")
-                    == "single_choice"
-                    and candidate_eligible(
-                        original_tool,
-                        {
-                            **decision,
-                            "action": "review",
-                            "reason": "real_calibration_pending",
-                        },
-                        policy,
-                    )
-                )
-            except (KeyError, TypeError, ValueError):
-                valid_policy = False
+            valid_policy = automatic_decision_valid(
+                decision, original_tool, arguments, context.packet
+            )
         if not valid_policy:
             raise ValueError(
                 "O MCP retornou uma política de decisão inválida; solicite revisão humana."
@@ -346,14 +528,20 @@ async def review_request(
                     "message": "Não foi possível obter uma decisão válida.",
                 },
             }
+        gate = decision.get("gate")
+        basis = gate.get("basis") if isinstance(gate, dict) else None
         return {
             **result,
             "action": "auto" if automatic else "needs_human",
             "auto_advance": automatic,
             "origin": "automated" if automatic else "review",
             "execution_authorized": False,
+            # What decided, whether it was calibrated and the scores it weighed.
+            "gate_basis": basis,
+            "calibrated": decision.get("calibrated") is True,
+            "score": policy_scores(original_tool, decision),
             "question": None if automatic else result["question"],
-            "reason": "Recomendação aceita pela política calibrada; não autoriza efeitos externos."
+            "reason": _accepted_reason(basis)
             if automatic
             else _review_reason(decision, arguments),
             "decision": decision,
