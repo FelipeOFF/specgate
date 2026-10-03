@@ -18,11 +18,20 @@ claims are supported.
 Interpret the verdicts:
 
 - Every code claim `verified` and no operational leftovers: the draft PR may
-  be created. `auto_advance` remains false until a real calibrated gate exists.
+  be created once publication is authorized. Without a manifest the verdicts pass
+  the confidence policy: `gate.basis=confidence_policy`, `calibrated=false`,
+  confidence and support strictly above the run threshold, and a
+  `gate.policy_binding` the client confirmed. `auto_advance=true` only recommends
+  and the score is an uncertainty filter, not measured accuracy; the grant for the
+  repository and `draft_pr` opens the PR. The person's explicit authorization of the
+  drafts (`specgate flow --authorize-drafts`) opens it instead of the grant, and then
+  the draft's verification skips this automatic predicate: `verified` code claims are
+  enough. Only the person passes that flag, never the agent on its own.
 - Any code claim `unsupported`: keep the ticket in review. Do not publish.
 - Any code claim `contradicted`: fail the ticket. Do not publish.
 - Operational claims only: `needs_human`. Do not treat them as a stall.
 
 Do not close issues, merge, deploy, retry implementation, or terminate the
-harness. Record the verification with the implementation. Mock, uncalibrated,
-and error results stay in review.
+harness. Record the verification with the implementation. Mock, a result without
+`gate.basis`, a binding the client did not confirm, and error results stay in
+review, unless the person passed `--authorize-drafts` for the drafts.

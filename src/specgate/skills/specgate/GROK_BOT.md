@@ -10,7 +10,9 @@ Antes de fazer uma pergunta pontual ao usuário:
    `jev_decide`. Informe `question_type`, `requires_authorization` e
    `missing_personal_fact` sem relaxar restrições do pedido.
 3. Aplique uma opção somente com `action=auto`, `origin=automated`, modo real,
-   calibração aprovada e ausência de autorização pendente.
+   `gate.basis=validated_manifest` (`calibrated=true`) e ausência de autorização
+   pendente. O Bot não tem cliente para conferir `gate.policy_binding`: sob
+   `confidence_policy` (`calibrated=false`) preserve as opções e pergunte.
 4. Em mock, falha técnica, contexto insuficiente, pergunta aberta, opção ausente
    ou autorização, preserve as opções e encaminhe a pergunta ao usuário.
 

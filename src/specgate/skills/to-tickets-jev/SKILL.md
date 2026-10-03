@@ -5,7 +5,10 @@ description: Turn an approved specification into a validated graph of vertical t
 
 # To Tickets with Jev
 
-Load the installed `to-tickets` skill and preserve its decomposition guidance.
+Load the installed `to-tickets` skill and preserve its decomposition guidance. It
+comes from another source, not from the Specgate set. Without a manifest it is not a
+public skill: routing keeps it in review until a person picks that skill and revision
+(`HumanReview`); without that, `specgate flow` stops at `skill_load_unconfirmed`.
 Read the approved spec revision, active decisions, domain vocabulary, repository
 boundaries, and the project's chosen destinations.
 
@@ -56,12 +59,20 @@ symmetric confirmation is allowed once per input, only for a near claim without 
 usable pair, as a new first evaluation with its own second one, and never after a
 contradicted verdict.
 
+Without a manifest the verification runs under the confidence policy
+(`gate.basis=confidence_policy`, `calibrated=false`), and the score is an
+uncertainty filter, not measured accuracy. The client confirms each evaluation's
+`gate.policy_binding` against the request it sent. A result without `gate.basis`,
+with a binding it did not confirm, or judged by a different authority than the other
+results keeps the graph in review, never an inferred success.
+
 For a weak claim, run `research-with-jev` and `research-filter-jev`, repair the graph
 using admitted evidence, then verify the affected planning again. Reserve through
 `tickets_research_begin` and persist through `tickets_research_record`; bind both
 to the current graph revision. Resume an evaluating reservation before starting
-another collection. The private `TicketClient.research_tickets` orchestrates this
-cycle. Public harnesses call the MCP tools and preserve the same journal.
+another collection. The public package ships `TicketClient.research_tickets`, which
+orchestrates this cycle; a harness that calls the MCP tools directly preserves the
+same journal.
 
 Allow at most three attempts per claim within the shared frozen research budget.
 Stop on repeated evidence or no useful new evidence. Keep the graph unpublished
@@ -138,7 +149,10 @@ the separate authorization `reference`. The public
 `specgate.delegation.publication_authority` and `verification_allows_review`
 helpers prepare authority and check results; bind verification to this graph's
 revision before calling. `TicketClient.review_delegated` runs the same review
-through the public client. Preserve
+through the public client. Passing gates only recommend (`execution_authorized`
+stays `false`): a score never replaces the human grant to publish for this
+repository, host, operation and graph revision. Without that grant, retain the
+publication in the consolidated exception report. Preserve
 reviewed relation capabilities. A rejected or stale graph stays unpublished.
 
 Only missing authority or unresolved decisions need human input. Consolidate

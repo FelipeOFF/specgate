@@ -50,9 +50,15 @@ Thresholds devem refletir o custo dos erros e casos representativos do projeto.
 [Confidence](https://docs.typesafe.ai/confidence),
 [Confidence routing](https://docs.typesafe.ai/patterns/confidence-routing)
 
-Política aprovada: mantenha o avanço automático desabilitado até calibrar os gates
-com casos representativos. Thresholds provisórios e exemplos oficiais não liberam
-automação. O Codex será o primeiro harness usado para validar o fluxo completo.
+Sem manifesto de calibração, o gate recomenda pela política de confiança
+(`gate.basis=confidence_policy`, `calibrated=false`): cada corte de 0,80 compara
+estritamente acima, então 0,79 e 0,80 ficam em revisão e só 0,81 avança. O score é
+um filtro de incerteza e não mede acurácia. Um manifesto validado, quando existe,
+passa a valer (`gate.basis=validated_manifest`, `calibrated=true`) e nunca cai de
+volta para a política se ficar inválido ou revogado. Resposta sem `gate.basis` vem de
+um host anterior a este contrato: o cliente a deixa em revisão, nunca em sucesso
+inferido. Thresholds de exemplos oficiais não definem os valores de produção.
+O Codex será o primeiro harness usado para validar o fluxo completo.
 
 O piloto de 60 casos usa exclusivamente mock: 30 casos para ajuste offline e 30
 reservados para validação. Reutilize as respostas reais já gravadas; não consulte

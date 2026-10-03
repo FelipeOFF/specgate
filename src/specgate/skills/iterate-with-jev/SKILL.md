@@ -24,7 +24,10 @@ Call `jev_verify` with two claims:
 - `{pr}:iterate-change` — the feedback fits this diff.
 - `{pr}:iterate-memory` — the feedback is a durable rule, not a one-off.
 
-Evidence is the comment, a diff summary, and the current memory file.
+Evidence is the comment, a diff summary, and the current memory file. Send the call
+through `specgate.client.review_request` (`tool=jev_verify`): the client checks
+`gate.policy_binding` against the request and context it sent, which the host's word
+cannot replace.
 
 ## Verdicts
 
@@ -33,9 +36,14 @@ Evidence is the comment, a diff summary, and the current memory file.
 - `verified` on `iterate-memory`: update the memory file. Keep it concise.
   Do not paste a transcript. Push only that file.
 - A claim that is not `verified` does not move. That includes
-  `auto_advance` false, mock, uncalibrated, contradicted, unsupported, and
-  an error. Comment that verdict. If neither claim is `verified`, do not
-  push.
+  `auto_advance` false, mock, a result without `gate.basis`, a binding the client
+  did not confirm, contradicted, unsupported, and an error. `calibrated=false`
+  with `gate.basis=confidence_policy` is the normal state without a manifest and
+  moves a claim only once the client confirmed its `gate.policy_binding`; the score
+  is an uncertainty filter, not measured accuracy. Without that client, as in a
+  direct MCP call, act only on `gate.basis=validated_manifest` and keep a
+  `confidence_policy` verdict in review. Comment that verdict. If neither claim is
+  `verified`, do not push.
 
 If Specgate MCP is unavailable, stop and say the iteration stays in review.
 Do not invent a verdict.
