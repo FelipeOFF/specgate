@@ -42,7 +42,7 @@ A coding agent can write a spec, open tickets and implement a slice without ever
 This package installs skills and an MCP client into the agents you already use. The harness keeps writing. [Jev](https://docs.typesafe.ai/concepts/system-one), TypeSafe's decision model, answers a typed question about the evidence you authorized: a choice, a claim, a screen, a ranking. The MCP call stays attached to the turn. There is no daemon, no callback later, no merge from a model.
 
 - One install for every harness it finds. `--harness` selects; `--yes` takes all of them.
-- Skills ship in English and run the same flow everywhere: `triage-jev` → `grill-with-jev` → `to-spec-jev` → `to-tickets-jev` → `implement-spec-jev` → `verify-spec-jev`. `iterate-with-jev` sits beside that flow: a `/iterate` comment is judged before the pull request branch moves.
+- Skills ship in English and run the same flow everywhere: `triage-jev` → `grill-with-jev` (with `research-with-jev` and `research-filter-jev` for a gap) → `to-spec-jev` → `to-tickets-jev` → `implement-spec-jev` → `verify-spec-jev`. `iterate-with-jev` sits beside that flow: a `/iterate` comment is judged before the pull request branch moves.
 - Your MCP host, your API key. Model keys stay on the server. This package never logs the credential.
 - If the MCP is down, the harness still runs. The decision stays in human review. One warning per session.
 
@@ -89,6 +89,8 @@ Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `D
 | --- | --- |
 | `triage-jev` | Classify a tracker issue. Labels change only after the maintainer confirms. |
 | `grill-with-jev` | Close the scope. Up to three evaluations per question, each retry with new evidence. |
+| `research-with-jev` | Collect evidence for one gap from authorized sources, after Jev picks the topic. |
+| `research-filter-jev` | Filter that packet into relevant, contradictory, rejected and repeated evidence. |
 | `to-spec-jev` | Authorized research and a versioned spec. `jev_verify` covers the claims. |
 | `to-tickets-jev` | Vertical ticket graph. One repository per ticket. |
 | `implement-spec-jev` | Walk the unblocked frontier in a worktree. |
@@ -126,7 +128,7 @@ python3 -m venv .venv
 | Path | What |
 | --- | --- |
 | `src/specgate/` | Public Python client and harness adapters |
-| `src/specgate/skills/` | `triage-jev`, `grill-with-jev`, `to-spec-jev`, `to-tickets-jev`, `implement-spec-jev`, `verify-spec-jev`, `iterate-with-jev` |
+| `src/specgate/skills/` | `triage-jev`, `grill-with-jev`, `research-with-jev`, `research-filter-jev`, `to-spec-jev`, `to-tickets-jev`, `implement-spec-jev`, `verify-spec-jev`, `iterate-with-jev` |
 | `scripts/verify_release.py` | Version lock and SHA-256 of the exported tree |
 
 ## Privacy and safety

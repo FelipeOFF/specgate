@@ -58,6 +58,8 @@ _OWNER = "specgate"
 _WORKFLOW_SKILLS = (
     "triage-jev",
     "grill-with-jev",
+    "research-with-jev",
+    "research-filter-jev",
     "to-spec-jev",
     "to-tickets-jev",
     "implement-spec-jev",

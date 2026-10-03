@@ -9,7 +9,8 @@ Load the approved spec revision and ticket graph. Require a delivery manifest
 with one `delivery_id`, explicit `owner/repository` entries, local repository
 roots, base branches, and deterministic checks. Reject duplicate repositories,
 duplicate roots, undeclared repositories, credentials, session references, and
-secrets in the manifest.
+secrets in the manifest. This manifest lists repositories and checks; it is not a
+calibration manifest, which no step of this flow asks for.
 
 Observe every published ticket before selecting work. Implement only tickets in
 the current unlocked frontier. Each ticket belongs to exactly one repository;
@@ -40,6 +41,13 @@ Stop at draft pull requests. Do not merge, remove draft status, deploy, rewrite
 published history, or bypass checks. Return authorization, missing adapters,
 ambiguous publications, invalid worktrees, and destructive recovery choices to
 a consolidated exception report. Reuse valid delegated authority for routine
-actions and draft publication. Continue independent branches before asking the
-human for the smallest missing decision; never change a technical gate to avoid
-that decision.
+actions and draft publication. A passing verification only recommends: it carries
+`gate.basis` (`confidence_policy` with `calibrated=false` when there is no manifest)
+and `execution_authorized` stays `false`. The draft needs the current grant for that
+repository and `draft_pr`, or the person's explicit authorization of the drafts,
+never the score. Continue independent branches before asking the human for the
+smallest missing decision; never change a technical gate to avoid that decision.
+
+`specgate flow` runs these stages after grill, research, spec and tickets and ends
+at the same draft pull requests, without a calibration manifest. It resumes from
+the state the host keeps and never merges, deploys or force-pushes.

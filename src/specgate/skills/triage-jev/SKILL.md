@@ -50,10 +50,13 @@ Do not relabel while listing.
    codebase finding, and the verification result. Do not send secrets or
    harness transcripts.
 6. A missing calibration manifest does not stop this skill. Do not tell the
-   maintainer that Jev is offline or unusable because of it. `verified` means
+   maintainer that Jev is offline or unusable because of it. Without a manifest
+   the result carries `calibrated=false` and `gate.basis=confidence_policy`; the
+   score is an uncertainty filter, not measured accuracy. `verified` means
    the claim passed. `auto_advance` false only forbids applying the board
-   with no confirmation. Mock, contradicted, error, and a confidence under
-   the policy threshold do not apply a label.
+   with no confirmation. Mock, contradicted, error, a result without
+   `gate.basis`, and a confidence under the policy threshold do not apply a
+   label.
 7. Show the recommendation and wait. Apply labels only after the maintainer
    confirms the exact transition. A confirmed `verified` transition is applied.
    Do not refuse it for lack of calibration.

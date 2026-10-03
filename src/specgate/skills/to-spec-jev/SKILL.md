@@ -6,7 +6,11 @@ description: Turn a completed grill into a researched, Jev-verified specificatio
 # To Spec with Jev
 
 Start from the completed grill record. Load the installed `to-spec` skill and
-preserve its template and testing-seam guidance.
+preserve its template and testing-seam guidance. It comes from another source, not
+from the Specgate set, and synthesis needs its `<spec-template>` block, which this
+skill does not carry. Without a manifest it is not a public skill: routing keeps it
+in review until a person picks that skill and revision (`HumanReview`); without
+that, `specgate flow` stops at `skill_load_unconfirmed`.
 
 Before synthesis, research the remaining technical and domain claims from
 authorized project sources. Record every source and content revision. Do not use
@@ -23,7 +27,13 @@ against the original scope, active grill decisions, and research. Preserve each
 verdict and its evidence revision. Check coverage of the original scope and every
 active grill decision separately. Every blocking claim needs confidence and
 support strictly above the frozen workflow threshold, with a minimum of 0.80.
-A strong average cannot compensate for a weak claim.
+A strong average cannot compensate for a weak claim. Without a manifest the
+verdicts advance under the confidence policy (`gate.basis=confidence_policy`,
+`calibrated=false`), and the score is an uncertainty filter, not measured accuracy.
+The client confirms each `gate.policy_binding` against the request and context it
+sent. A result without `gate.basis`, with a binding it did not confirm, or judged by
+a different authority than the other results keeps the spec in review, never an
+inferred success.
 
 For a weak claim, reuse `research-with-jev` and `research-filter-jev`. Reserve the
 attempt through `spec_research_begin` before collection, bound to the exact spec
@@ -65,9 +75,11 @@ destination and publication, call MCP `spec_review` after fidelity and coverage
 gates pass. Send the exact artifact revision and authorization with
 `seams_approved=true`, `publication_authorized=true`, `origin=automated`, the
 global `delegation_revision`, canonical `project`, approved `repositories` and
-the separate authorization `reference`. The public client exposes
-`specgate.delegation.publication_authority` and `verification_allows_review` to
-prepare these fields and check gates; `SpecClient.review_delegated` runs the same
+the separate authorization `reference`. Passing gates only recommend
+(`execution_authorized` stays `false`): a score never replaces the human grant to
+publish for this repository, host, operation and exact revision. The public client
+exposes `specgate.delegation.publication_authority` and `verification_allows_review`
+to prepare these fields and check gates; `SpecClient.review_delegated` runs the same
 review through the public client.
 Never manufacture a human acceptance or overwrite an existing human rejection.
 

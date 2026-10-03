@@ -72,8 +72,10 @@ Work through the unresolved frontier one question at a time:
    missing authorization, an unreadable calibration manifest, unavailable service,
    or a closed evidence gate. Operational diagnostics do not trigger more research.
    A host with no manifest researches too: it admits a new source whose Screen and
-   Verify pass the confidence policy (`gate.basis=confidence_policy`), and an
-   installed manifest admits by its own binding. Each cycle shows its `basis`.
+   Verify pass the confidence policy (`gate.basis=confidence_policy`,
+   `calibrated=false`) with the `gate.policy_binding` checked against the collected
+   text, question and claim, and an installed manifest admits by its own binding.
+   Each cycle shows its `basis`.
    With an active delegation, hand unresolved research to the delivery's bounded
    adjudication. Without that capability, preserve the precise blocker.
 5. Reuse delegated business policy and existing authority. A fact or choice only
@@ -81,10 +83,15 @@ Work through the unresolved frontier one question at a time:
    once with a recommendation and the minimum options. Preserve human restrictions.
 
 Treat `action=auto` with `auto_advance` as the selected answer when the server
-returns it for a real decision. The confidence policy does this for one winning
-option strictly above 0.80, with or without a calibration manifest.
-`origin=automated` is that server decision. Mock, recorded, abstaining, and
-error results stay in review. Confidence at or below 0.80 remains unresolved.
+returns it for a real decision and names its basis: `gate.basis=confidence_policy`
+with `calibrated=false` (no manifest needed), or `validated_manifest` with
+`calibrated=true`. The policy does this for one winning option strictly above 0.80.
+The score is an uncertainty filter, not measured accuracy, and `auto_advance` only
+recommends: `execution_authorized` stays `false`. `origin=automated` is that server
+decision. A turn without `gate.basis`, or whose binding no longer holds, comes back
+`stale` and returns to review, never to an inferred success. Mock, recorded,
+abstaining, and error results stay in review. Confidence at or below 0.80 remains
+unresolved.
 
 When a pending turn includes `review_text`, show that sentence before asking
 the human to confirm. It names the option Jev selected and the gate reason.
