@@ -13,7 +13,7 @@ rows, taking each claim from the latest stored verification that judged it, so a
 submission that leaves the claim out does not erase what it was judged.
 """
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, NamedTuple
 
 from specgate.client import gate_authority
@@ -263,6 +263,56 @@ def with_reuse(
             "held": held,
         },
     }
+
+
+def judged_on_purpose(
+    verification: dict[str, Any],
+    prior: dict[str, Any] | None,
+    threshold: float,
+    history: Sequence[dict[str, Any]] = (),
+    *,
+    issued: Callable[[Any], bool] = lambda _: False,
+) -> frozenset[str]:
+    """The claims an unchanged graph judged again on purpose; none when it judged any otherwise.
+
+    That is the symmetric confirmation, the one way back of a claim near the cutoff with no usable
+    pair (the first draw that comes back alone and near is held, and the hold spends the way
+    back, so no later draw lifts it), and a claim another authority judged before, judged now by
+    the host's own (`issued` says whether a gate is the host's). Any other gate is one the client
+    stamped on the same content, so it judges nothing new. A graph that judges nothing again, or
+    judges a weak claim again any other way, is no part of an evaluation.
+    """
+    evaluated = _entries(verification, "evaluated")
+    redrawn = [
+        entry
+        for entry in _entries(verification, "held")
+        if entry.get("reason") == "reevaluated_without_change"
+    ]
+    chain = memories(lineage(prior, history))
+    current = _judged(verification)
+
+    def rejudged(claim_id: str) -> bool:
+        """The host's authority judged the claim after another one did."""
+        return (
+            claim_id in chain
+            and claim_id in current
+            and issued(current[claim_id].result.get("gate"))
+            and not issued(chain[claim_id].judged.result.get("gate"))
+        )
+
+    on_purpose = (
+        bool(evaluated or redrawn)
+        and all(
+            entry.get("reason") == "symmetric_confirmation"
+            or (entry.get("reason") == "changed_gate" and rejudged(entry["id"]))
+            for entry in evaluated
+        )
+        and all(
+            entry["id"] in chain and reentry(chain[entry["id"]], threshold)
+            for entry in redrawn
+        )
+    )
+    return frozenset(entry["id"] for entry in (*evaluated, *redrawn)) if on_purpose else frozenset()
 
 
 def reuse_gaps(verification: dict[str, Any]) -> list[str]:

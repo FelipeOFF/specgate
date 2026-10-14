@@ -469,6 +469,9 @@ def main(
         "--allow-publication", action="append", choices=("spec", "tickets", "draft_pr")
     )
     setup.add_argument("--allow-file-edits", action=argparse.BooleanOptionalAction)
+    # An operation of its own, apart from --allow-publication: it adds or removes the
+    # rewrite of decisions of an approved spec, and nothing but this flag grants it.
+    setup.add_argument("--allow-rewrite", action=argparse.BooleanOptionalAction)
     setup.add_argument("--authorization-reference")
     setup.add_argument("--expires-at")
     setup.add_argument("--require-capability", action="append")
@@ -527,6 +530,7 @@ def main(
                     "hosts": args.allow_host,
                     "repositories": args.allow_repository,
                     "publications": args.allow_publication,
+                    "rewrite_decisions": args.allow_rewrite,
                     "file_edits": args.allow_file_edits,
                     "reference": args.authorization_reference,
                     "expires_at": args.expires_at,

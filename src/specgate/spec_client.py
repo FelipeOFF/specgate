@@ -1,7 +1,7 @@
 """Harness synthesis through the installed skill, then reconciled tracker effects."""
 
 import json
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
@@ -9,7 +9,10 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from specgate import lineage_budget
 from specgate.beads_tracker import BeadsSpecTracker
+from specgate.claim_equivalence import check_equivalence
+from specgate.claim_wording import check_derivation, check_wording
 from specgate.client import MIXED, confirmed_result, gate_authority
 from specgate.context import (
     ContextPacket,
@@ -17,7 +20,12 @@ from specgate.context import (
     build_context,
     read_skill,
 )
-from specgate.delegation import review_authority_valid
+from specgate.decision_lineage import Group
+from specgate.delegation import (
+    review_authority_valid,
+    rewrite_authority,
+    rewrite_authority_valid,
+)
 from specgate.destination import resolve_destination, valid_project_reference
 from specgate.grill_client import GrillClient
 from specgate.jira_tracker import JiraSpecTracker
@@ -34,7 +42,9 @@ from specgate.research_ledger import (
     resumable,
 )
 from specgate.research_restore import restore_research
+from specgate.residual import AGENT_ACTION, handoff_route
 from specgate.shared.domain.inputs import Item
+from specgate.spec_claims import keeps_researched_decision
 from specgate.spec_contracts import (
     IssueReference,
     SpecAuthorization,
@@ -43,8 +53,44 @@ from specgate.spec_contracts import (
     source_revision,
     valid_reference,
 )
+from specgate.spec_residual import next_cycle, remaining
+from specgate.spec_rewrite import (
+    APPROVED,
+    IMPLEMENTATION_PUBLISHING,
+    PUBLISHING_MESSAGE,
+    REWRITE_NOT_APPROVED,
+    REWRITE_NOT_AUTHORIZED,
+    SpecRewrite,
+    check_scope,
+    publication_claimed,
+    replaced_approved,
+    rewrite_groups,
+)
 from specgate.tracker import GitHubTracker, Tracker, TrackerError
 from specgate.verification_refs import context_digest, digest, source_refs
+from specgate.wording import AGENT_CODES, AgentRefusal
+
+# The coverage evidence holds the rendered spec; the context only points to it.
+SPEC_ARTIFACT = "Spec renderizada, no campo evidence do pedido."
+
+
+def _once(rules: Iterable[str], evidence: Iterable[Mapping[str, Any]]) -> list[str]:
+    """Point each rule that an evidence item already holds to that item.
+
+    `build_context` files CONTEXT.md, AGENTS.md and README.md under the rules and
+    under the evidence, so sending both would carry the vocabulary twice. The
+    evidence keeps the text, the copy Jev reads as evidence (#148); the rule
+    becomes a short pointer and the rules stay ready for a decision.
+    """
+    held: dict[str, str] = {}
+    for item in evidence:
+        held.setdefault(item["text"], item["id"])
+    return [
+        f"Regras do projeto: texto integral no item {held[rule]} da evidência do contexto."
+        if rule in held
+        else rule
+        for rule in rules
+    ]
 
 
 def _domain(project: Path, objective: str, research: list[str]) -> ContextPacket:
@@ -60,16 +106,27 @@ def _domain(project: Path, objective: str, research: list[str]) -> ContextPacket
     )
 
 
-def _review(state: dict[str, Any], code: str) -> dict[str, Any]:
+def _review(
+    state: dict[str, Any],
+    code: str,
+    message: str = "Confira a revisão e reconcilie o tracker antes de continuar.",
+) -> dict[str, Any]:
     return {
         **state,
         "action": "needs_human",
         "auto_advance": False,
-        "error": {
-            "code": code,
-            "message": "Confira a revisão e reconcilie o tracker antes de continuar.",
-        },
+        "error": {"code": code, "message": message},
     }
+
+
+def _not_authorized(state: dict[str, Any]) -> dict[str, Any]:
+    """The refusal of a rewrite the grant does not cover: nothing was written."""
+    return _review(
+        state,
+        REWRITE_NOT_AUTHORIZED,
+        "A delegação vigente não inclui a operação de reescrita de decisões, venceu ou "
+        "foi revogada; a pessoa a concede por specgate setup --allow-rewrite.",
+    )
 
 
 class SpecClient(GrillClient):
@@ -88,6 +145,7 @@ class SpecClient(GrillClient):
         authorization: SpecAuthorization | None = None,
         research_refs: list[dict[str, str]] | None = None,
         verification: dict[str, Any] | None = None,
+        rewrite: SpecRewrite | None = None,
     ) -> dict[str, Any]:
         return await self._call(
             "spec_submit",
@@ -100,6 +158,8 @@ class SpecClient(GrillClient):
             authorization=authorization.model_dump() if authorization else None,
             research_refs=research_refs or [],
             verification=verification or {},
+            # Sent only by a rewrite, so every other request keeps the shape it had.
+            **({"rewrite": rewrite.model_dump()} if rewrite else {}),
         )
 
     async def review(
@@ -146,6 +206,8 @@ class SpecClient(GrillClient):
         if (
             not authority
             or artifact.get("status") not in {"review", "ready", "published"}
+            # Decisions of an approved revision were replaced outside the rewrite operation.
+            or replaced_approved(state)
             or artifact.get("gaps")
             or not verification_allows_review(
                 results,
@@ -194,17 +256,46 @@ class SpecClient(GrillClient):
         harness: Callable[[dict[str, Any]], Awaitable[SpecDraft]],
         research_sources: list[str] | None = None,
         authorization: SpecAuthorization | None = None,
+        rewrite: bool = False,
     ) -> dict[str, Any]:
+        """Synthesize the spec; with `rewrite`, rewrite decisions of the approved one.
+
+        A rewrite needs the standing grant of the operation, read before the harness is
+        asked for anything and checked again right before the revision is written.
+        """
         state = await self.get(run_id)
         if "error" in state:
             return state
-        if state["revision"] != expected_revision or state["stage"] not in {
-            "grill_complete",
-            "spec_review",
-            "spec_ready",
-            "spec_published",
-        }:
-            return _review(state, "grill_incomplete")
+        stages = {"grill_complete", "spec_review", "spec_ready", "spec_published"}
+        if rewrite:
+            # The tickets of the approved spec may already exist: they go stale with the rewrite.
+            stages = {
+                "spec_ready",
+                "spec_published",
+                "tickets_review",
+                "tickets_ready",
+                "tickets_published",
+            }
+        if state["revision"] != expected_revision or state["stage"] not in stages:
+            return _review(state, REWRITE_NOT_APPROVED if rewrite else "grill_incomplete")
+        authority: dict[str, Any] | None = None
+        if rewrite:
+            status = (state.get("spec") or {}).get("status")
+            if status not in APPROVED:
+                return _review(state, REWRITE_NOT_APPROVED)
+            # A published spec names the repository whose scope the grant must cover.
+            repository = (state.get("publication") or {}).get("repository")
+            authority = rewrite_authority(
+                project=project,
+                host=self.url,
+                repositories=[repository] if status == "published" and repository else [],
+                home=self.home,
+            )
+            if authority is None:
+                return _not_authorized(state)
+            # A worker that claimed its draft pull request opens it without reading the run.
+            if publication_claimed(state):
+                return _review(state, IMPLEMENTATION_PUBLISHING, PUBLISHING_MESSAGE)
         source = SkillSource(
             "skills/to-spec",
             "",
@@ -253,10 +344,23 @@ class SpecClient(GrillClient):
             return _review(state, "skill_changed")
         if research().revision != domain.revision:
             return _review(state, "research_changed")
+        divisions: list[Group] | None = None
+        if authority is not None:
+            # A rewrite the host would refuse for what it changes spends nothing on the Jev.
+            # Its lineage is read against the approved revision alone, as the host reads it.
+            try:
+                divisions = rewrite_groups(state["spec"], draft.model_dump())
+                check_scope(state["spec"], draft.model_dump(), divisions)
+            except AgentRefusal as rejected:
+                return {**state, **rejected.refusal()}
         try:
-            verification = await self._verify_draft(state, draft, summary, asdict(domain))
+            verification = await self._verify_draft(
+                state, draft, summary, asdict(domain), divisions=divisions
+            )
         except PayloadTooLarge as overflow:
             return overflow.review(state)
+        except AgentRefusal as rejected:
+            return {**state, **rejected.refusal()}
         if verification is None:
             return _review(state, "verification_failed")
         if research().revision != domain.revision:
@@ -265,6 +369,13 @@ class SpecClient(GrillClient):
             read_skill(source, authorized_roots)
         except (OSError, ValueError):
             return _review(state, "skill_changed")
+        # The harness and the Jev took their time: the grant is read once more, right before
+        # the call that writes. A grant that expired, was revoked or lost the operation
+        # writes no revision.
+        if authority is not None and not rewrite_authority_valid(
+            authority, host=self.url, home=self.home
+        ):
+            return _not_authorized(state)
         submitted = await self.submit(
             run_id,
             expected_revision,
@@ -277,14 +388,43 @@ class SpecClient(GrillClient):
                 {key: item[key] for key in ("id", "source", "revision")}
                 for item in verification["sources"]
             ],
+            rewrite=SpecRewrite.model_validate(authority) if authority else None,
         )
         return self.save_spec(submitted, project)
+
+    async def rewrite_decisions(
+        self,
+        run_id: str,
+        expected_revision: int,
+        *,
+        idempotency_key: str,
+        project: Path,
+        skill_path: Path,
+        authorized_roots: list[Path],
+        harness: Callable[[dict[str, Any]], Awaitable[SpecDraft]],
+        research_sources: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Rewrite or divide decisions of the approved spec under the grant of the operation."""
+        return await self.synthesize(
+            run_id,
+            expected_revision,
+            idempotency_key=idempotency_key,
+            project=project,
+            skill_path=skill_path,
+            authorized_roots=authorized_roots,
+            harness=harness,
+            research_sources=research_sources,
+            rewrite=True,
+        )
 
     @staticmethod
     def _fidelity_evidence(
         state: dict[str, Any], decisions: list[dict[str, Any]], context: dict[str, Any]
     ) -> str:
-        """Objective, scope, rules and decision texts; research stays in the context."""
+        """Objective, scope, rules and decision texts; research stays in the context.
+
+        The scope is left out when it is the objective, the case of the flow.
+        """
         carried = {*context["rules"], *(item["text"] for item in context["evidence"])}
         rows = []
         for turn in decisions:
@@ -303,10 +443,13 @@ class SpecClient(GrillClient):
                 "answer": answer.get("text"),
             }
             rows.append({key: value for key, value in row.items() if value})
+        scope = state["context"]["artifact"]
         return json.dumps(
             {
                 "objective": state["objective"],
-                "scope": state["context"]["artifact"],
+                # The flow opens its grill with the objective as the scope: the same
+                # text under a second key is dropped.
+                **({"scope": scope} if scope != state["objective"] else {}),
                 "rules": [
                     rule for rule in state["context"]["rules"] if rule not in carried
                 ],
@@ -338,13 +481,28 @@ class SpecClient(GrillClient):
         summary: dict[str, Any],
         context: dict[str, Any],
         added: list[dict[str, Any]] | None = None,
+        divisions: list[Group] | None = None,
     ) -> dict[str, Any] | None:
-        """Verify with every research text once, in the context; store refs and hashes.
+        """Verify with every text once per request; store refs and hashes.
+
+        The vocabulary and each research text travel once, as context evidence; the
+        rules only point to the vocabulary item. The rendered spec travels once, as
+        the coverage evidence; the coverage artifact only points to it.
 
         `context` holds the vocabulary and the project sources. `added` holds the
         sources a research cycle admitted: only the fidelity context carries them.
+        `divisions` are the groups the equivalence check covers; a rewrite hands the ones
+        it resolved against the approved revision, and every other request reads them from
+        the revisions stored before the draft.
         """
-        from specgate.spec_claims import expected_claims, strong
+        from specgate.spec_claims import (
+            derived_targets,
+            earlier_specs,
+            expected_claims,
+            spec_groups,
+            strong,
+            wording_targets,
+        )
 
         groups = expected_claims(
             draft.model_dump(), state["objective"], summary["decisions"]
@@ -357,24 +515,76 @@ class SpecClient(GrillClient):
             return None
         added = added or []
         rendered = draft.render()
+        held = [*context["evidence"], *added]
         contexts = {
-            "fidelity": {**context, "evidence": [*context["evidence"], *added]},
-            "coverage": {**context, "artifact": rendered},
+            "fidelity": {
+                **context,
+                "rules": _once(context["rules"], held),
+                "evidence": held,
+            },
+            "coverage": {
+                **context,
+                "rules": _once(context["rules"], context["evidence"]),
+                "artifact": SPEC_ARTIFACT,
+            },
         }
         evidence = {
             "fidelity": self._fidelity_evidence(state, summary["decisions"], context),
             "coverage": rendered,
         }
-        prior = state.get("spec", {}).get("verification", {})
+        stored = state.get("spec") or {}
+        prior = stored.get("verification", {})
+        context_revisions = {kind: context_digest(value) for kind, value in contexts.items()}
+        evidence_revisions = {kind: digest(value) for kind, value in evidence.items()}
+        # The content of an evaluation that already came out weak is refused before any call, as
+        # the host refuses it: judging it again would only draw another score. A person who acted
+        # since the counter last took a revision in starts the count over, and what it had
+        # rejected with it.
+        content = lineage_budget.content_digest(
+            draft.model_dump(), evidence_revisions, context_revisions
+        )
+        acted = (
+            bool(stored)
+            and lineage_budget.approved_by_person(stored.get("authorization"), "seams_approved")
+        ) or lineage_budget.answered_since(state, lineage_budget.SPEC)
+        if not acted and lineage_budget.rejected(state, lineage_budget.SPEC, content):
+            raise lineage_budget.refuse_identical(lineage_budget.SPEC, content)
+        # A decision the agent divided or reformulated is checked against the original it
+        # replaces before anything else: a part that adds or loses content refuses the draft
+        # here, and an unresolvable lineage is refused before the Jev is called.
+        if divisions is None:
+            divisions = spec_groups(draft.model_dump(), earlier_specs(state))
+        equivalence = (
+            await check_equivalence(
+                self._call, divisions, contexts["fidelity"], prior.get("equivalence")
+            )
+            if divisions
+            else None
+        )
+        # The decisions the agent wrote are checked before any claim is judged: a defect
+        # refuses the draft here, with no evaluation spent and no research opened.
+        targets, scope = wording_targets(groups)
+        wording = await check_wording(
+            self._call, targets, scope, contexts["fidelity"], prior.get("wording")
+        )
+        # The claims the host derived are checked in the same pass, after the texts above: a
+        # refusal comes first and spends no call on them. A defect here is a diagnostic for
+        # the maintainer, never a refusal, and the check is not required.
+        wording = await check_derivation(
+            self._call,
+            derived_targets(groups),
+            wording,
+            scope,
+            contexts["fidelity"],
+            prior.get("wording"),
+        )
         verification: dict[str, Any] = {
+            "wording": wording,
+            **({"equivalence": equivalence} if equivalence else {}),
             "claims": {},
             "sources": source_refs([*context["evidence"][1:], *added]),
-            "context_revisions": {
-                kind: context_digest(value) for kind, value in contexts.items()
-            },
-            "evidence_revisions": {
-                kind: digest(value) for kind, value in evidence.items()
-            },
+            "context_revisions": context_revisions,
+            "evidence_revisions": evidence_revisions,
         }
         threshold = state.get("workflow_policy", {}).get("confidence", 0.8)
         for kind, claims in (("fidelity", factual), ("coverage", coverage)):
@@ -434,7 +644,12 @@ class SpecClient(GrillClient):
                     )
                 verification[kind] = combined
             else:
-                verification[kind] = previous
+                # Every claim kept its strong verdict; a claim that left the spec takes its
+                # row with it, so the rows are exactly those of the claims.
+                verification[kind] = {
+                    **previous,
+                    "verdicts": [old_rows[claim.id] for claim in claims],
+                }
             verification["claims"][kind] = [claim.model_dump() for claim in claims]
         return verification
 
@@ -528,6 +743,8 @@ class SpecClient(GrillClient):
                 idempotency_key=idempotency_key,
                 artifact_revision=spec["revision"],
                 claim_id=claim_id,
+                # The agent chooses research and registers why before the cycle opens.
+                lineage_actions=[lineage_budget.research_action(claim_id, request.reason)],
             )
             if reserved.get("error"):
                 return {**state, **reserved}
@@ -572,6 +789,10 @@ class SpecClient(GrillClient):
                     "directive": "Corrija apenas claims alteradas pela evidência; preserve decisões e testing seams.",
                 }
             )
+            try:
+                keeps_researched_decision(spec["draft"], draft.model_dump(), claim_id)
+            except AgentRefusal as rejected:
+                return {**state, **rejected.refusal()}
         summary = await self._call("grill_summary", run_id=run_id)
         if summary.get("error"):
             return summary
@@ -591,6 +812,8 @@ class SpecClient(GrillClient):
             )
         except PayloadTooLarge as overflow:
             return overflow.review(state)
+        except AgentRefusal as rejected:
+            return {**state, **rejected.refusal()}
         if verification is None:
             return _review(state, "verification_failed")
         submitted = await self.submit(
@@ -642,6 +865,10 @@ class SpecClient(GrillClient):
                 "directive": "Corrija apenas a claim julgada, com as evidências que a adjudicação examinou; preserve decisões e testing seams.",
             }
         )
+        try:
+            keeps_researched_decision(spec["draft"], draft.model_dump(), claim_id)
+        except AgentRefusal as rejected:
+            return {**state, **rejected.refusal()}
         summary = await self._call("grill_summary", run_id=run_id)
         if summary.get("error"):
             return summary
@@ -649,6 +876,8 @@ class SpecClient(GrillClient):
             verification = await self._verify_draft(state, draft, summary, context, earlier)
         except PayloadTooLarge as overflow:
             return overflow.review(state)
+        except AgentRefusal as rejected:
+            return {**state, **rejected.refusal()}
         if verification is None:
             return _review(state, "verification_failed")
         submitted = await self.submit(
@@ -674,7 +903,6 @@ class SpecClient(GrillClient):
         capture: Callable[[ResearchSource], Awaitable[None]] | None = None,
     ) -> dict[str, Any]:
         from specgate.delegation import load_delegation
-        from specgate.research_ledger import exhausted, stop
         from specgate.spec_claims import weak_claims
 
         state = await self.get(run_id)
@@ -686,21 +914,20 @@ class SpecClient(GrillClient):
             if not weak:
                 return self.save_spec(state, self.project or Path.cwd())
             pending = state.get("research_pending")
-            claim_id = (
-                pending["question_id"].removeprefix("spec:") if pending else weak[0]
-            )
-            reason = (
-                None
-                if pending
-                else (
-                    stop(state, f"spec:{claim_id}")
-                    or exhausted(
-                        state,
-                        f"spec:{claim_id}",
-                        state.get("workflow_policy", {}).get("research_budget", 12),
-                    )
-                )
-            )
+            if pending:
+                claim_id, reason = pending["question_id"].removeprefix("spec:"), None
+            else:
+                if "next_actions" not in state.get("spec", {}):
+                    # What a write returns carries no derived actions: read them.
+                    state = await self.get(run_id)
+                    if state.get("error"):
+                        break
+                allowed = state.get("spec", {}).get("next_actions", {})
+                claim_id, reason = next_cycle(state, weak, allowed)
+                if reason == AGENT_ACTION:
+                    # What is left is the agent's own to change, not a research to run.
+                    refused = lineage_budget.not_researchable(claim_id, allowed.get(claim_id, []))
+                    return {**state, **refused.refusal()}
             if reason:
                 state = _review(state, reason)
                 break
@@ -724,6 +951,9 @@ class SpecClient(GrillClient):
             operational = state.get("research_stopped", {}).get(f"spec:{claim_id}")
             if operational in OPERATIONAL:
                 state = _review(state, operational)
+        if state.get("error", {}).get("code") in AGENT_CODES:
+            # The agent revises its own text; there is nothing to hand to a person.
+            return state
         project = self.project or Path.cwd()
         grant = load_delegation(self.home)
         handoff = {
@@ -732,14 +962,9 @@ class SpecClient(GrillClient):
             "spec": state.get("spec"),
             "reason": state.get("error", {}).get("code"),
             "research_attempts": state.get("research_attempts", []),
-            "route": (
-                "bounded_adjudication"
-                if state.get("error", {}).get("code")
-                in {"research_limit", "research_budget_exhausted", "stagnation"}
-                else "delivery_exception"
-            )
-            if grant.active(project, self.url)
-            else "human_review",
+            "route": handoff_route(
+                state.get("error", {}).get("code"), grant.active(project, self.url)
+            ),
             "delegation_revision": grant.revision
             if grant.active(project, self.url)
             else None,
@@ -811,6 +1036,9 @@ class SpecClient(GrillClient):
             return _review(state, "destination_adapter_missing")
         artifact = state.get("spec")
         if not artifact or artifact["status"] not in {"ready", "published"}:
+            return _review(state, "spec_review_required")
+        # The raw gaps stay on record; the ones the maintainer accepted do not block.
+        if remaining(artifact.get("gaps", []), artifact.get("residual_acceptance")):
             return _review(state, "spec_review_required")
 
         def authorized() -> bool:

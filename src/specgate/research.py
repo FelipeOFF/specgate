@@ -77,11 +77,15 @@ class ResearchRequest(BaseModel):
     topics: list[Item] = Field(min_length=2, max_length=48)
     sources: list[ResearchSource] = Field(max_length=100)
     limitations: list[str] = Field(default_factory=list)
+    # Why the agent researches the weak claim, registered before the cycle opens. Empty means
+    # the client registers its default reason.
+    reason: str = Field(default="", max_length=2000)
 
     @model_validator(mode="after")
     def valid_scope(self) -> Self:
         checked_text(self.question)
         checked_text(self.claim, allow_empty=True)
+        checked_text(self.reason, allow_empty=True)
         topics = item_map(self.topics)
         if self.human_topic is not None and self.human_topic not in topics:
             raise ValueError("Tema humano deve pertencer ao catálogo.")

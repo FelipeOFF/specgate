@@ -10,6 +10,7 @@ from mcp.shared.dispatcher import ProgressFnT
 from specgate.context import ContextPacket
 from specgate.delegation import load_delegation
 from specgate.grill_contracts import GrillQuestion, HumanAnswer
+from specgate.lineage_budget import EXHAUSTED
 from specgate.payload import CODE, PayloadTooLarge
 from specgate.research import (
     ResearchRequest,
@@ -139,12 +140,20 @@ class GrillClient:
         expected_revision: int,
         *,
         idempotency_key: str,
+        reason: str = "",
     ) -> dict[str, Any]:
+        """Reserve a cycle and register `research` with the reason the agent gave. With none, the
+        host registers research with the default reason that says the harness gave none."""
         return await self._call(
             "grill_research_begin",
             run_id=run_id,
             expected_revision=expected_revision,
             idempotency_key=idempotency_key,
+            **(
+                {"lineage_action": {"action": "research", "reason": reason.strip()}}
+                if reason.strip()
+                else {}
+            ),
         )
 
     async def _collect_cycle(
@@ -178,9 +187,17 @@ class GrillClient:
             transport_options=options,
         )
         collected_ref = save_research(collected, project, "docs/research")
+        packet = CollectedPacket.model_validate(collected)
+        # A question the agent reformulated under its own id keeps the cycles it had, collected
+        # for the words it had; the host still refuses any evidence they already admitted.
+        kept = [
+            (row, old)
+            for row in previous
+            if (old := read_packet(project, row["path"])[0]).question == packet.question
+        ]
         filtered = await filter_research(
-            CollectedPacket.model_validate(collected),
-            [read_packet(project, row["path"])[0] for row in previous],
+            packet,
+            [old for _, old in kept],
             self.url,
             self.token,
             authorize_jev=authorize_jev,
@@ -189,7 +206,7 @@ class GrillClient:
         )
         filtered["history"] = {
             "input": collected_ref,
-            "previous": previous,
+            "previous": [row for row, _ in kept],
             "selected_ids": [row["id"] for row in filtered["selected"]],
             "rejected_ids": [row["id"] for row in filtered["rejected"]],
         }
@@ -264,6 +281,10 @@ class GrillClient:
             else "evaluation_unavailable"
             if active["evaluation"].get("origin") != "jev"
             or active["evaluation"].get("action") == "error"
+            else "decision_check_review"
+            if (active.get("wording") or {}).get("review")
+            else "decision_equivalence_review"
+            if ((active.get("lineage") or {}).get("equivalence") or {}).get("passed") is False
             else "research_budget_exhausted"
             if exhausted(
                 state, question_id, state["workflow_policy"].get("research_budget", 12)
@@ -274,10 +295,13 @@ class GrillClient:
         )
         if diagnostic:
             return {**state, "diagnostic": {"code": diagnostic}}, False
+        # The reason is the agent's own; with none, the host registers its default.
+        reasons = {"reason": request.reason} if request.reason.strip() else {}
         reserved = await self.research_begin(
             run_id,
             state["revision"],
             idempotency_key=idempotency_key,
+            **reasons,
         )
         if reserved.get("reconcile") or reserved.get("error"):
             return reserved, False
@@ -400,8 +424,16 @@ class GrillClient:
                 authorize_jev=authorize_jev,
                 capture=capture,
             )
-            if state.get("research_stopped", {}).get(active_id) or state.get(
-                "reconcile"
+            # The requests are for the question that was active: when it resolves, the next part of
+            # a division is a question of its own, and these requests are not for it.
+            moved = (state.get("pending") or {}).get("question", {}).get("id") not in (
+                None,
+                active_id,
+            )
+            if (
+                state.get("research_stopped", {}).get(active_id)
+                or state.get("reconcile")
+                or moved
             ):
                 break
         return self.research_handoff(state)
@@ -413,12 +445,22 @@ class GrillClient:
             return state
         question = pending["question"]
         reason = state.get("research_stopped", {}).get(question["id"])
-        if reason not in {"evaluation_limit", "research_limit", "research_budget_exhausted", "stagnation"}:
+        if reason not in {
+            "evaluation_limit",
+            "research_limit",
+            "research_budget_exhausted",
+            "stagnation",
+            EXHAUSTED,
+        }:
             return state
         project = self.project or Path.cwd()
         grant = load_delegation(self.home)
+        # A lineage that drew its third rejection goes to a person, delegation or not: the
+        # bounded adjudication judges a gap after three cycles of the question, and the sum
+        # of reformulations, divisions and cycles is not that history.
         delegated = (
-            grant.active(project, self.url)
+            reason != EXHAUSTED
+            and grant.active(project, self.url)
             and not question["requires_authorization"]
             and not question["missing_personal_fact"]
         )
@@ -435,6 +477,12 @@ class GrillClient:
             "route": "bounded_adjudication" if delegated else "human_review",
             "delegation_revision": grant.revision if delegated else None,
             "auto_advance": False,
+            # What the agent registered and how the lineage was counted, for the person.
+            **(
+                {"lineage": state["lineages"][question["id"]]}
+                if question["id"] in state.get("lineages", {})
+                else {}
+            ),
         }
         artifact = save_research(packet, project, "docs/grills/handoffs")
         return {**state, "research_handoff": {**packet, "artifact": artifact}}
@@ -447,7 +495,9 @@ class GrillClient:
         idempotency_key: str,
         question: GrillQuestion | None = None,
         finish: bool = False,
+        siblings: Sequence[GrillQuestion] = (),
     ) -> dict[str, Any]:
+        """Send a question, or the first part of a division with the others in `siblings`."""
         return await self._call(
             "grill_continue",
             run_id=run_id,
@@ -455,6 +505,12 @@ class GrillClient:
             idempotency_key=idempotency_key,
             question=question.model_dump(mode="json") if question else None,
             finish=finish,
+            # Absent for a single question, so a host from before the field is called as it was.
+            **(
+                {"siblings": [item.model_dump(mode="json") for item in siblings]}
+                if siblings
+                else {}
+            ),
         )
 
     async def answer(

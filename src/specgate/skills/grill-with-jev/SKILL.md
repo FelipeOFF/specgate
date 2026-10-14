@@ -28,14 +28,63 @@ Work through the unresolved frontier one question at a time:
 
 1. Offer stable public option IDs. A recommendation is evidence, not a forced
    answer; accept a different option when the server returns `action=auto`.
-2. Call `grill_start` once, then `grill_continue` for each question. Preserve
+2. Test every text you wrote with `jev_check` before sending it: the question
+   (`target=question`) and each option (`target=option:<id>`), with the run
+   objective and the packet rules as `scope` and the question's evidence packet
+   as `context`. Send it when the check passed the gate
+   (`action=auto`) and returned `next_actions=["judge"]`. A check that stayed in
+   review (`action=review`: mock, error, a probability at or between the cutoffs)
+   clears nothing and finds no defect; do not reword a text only to draw another
+   result. Send it and let the host keep the turn for a person
+   (`decision_check_review`). The host runs the same check inside
+   `grill_continue`, so this test only saves a refused call. The check is an
+   uncertainty filter with no measured accuracy. Jev only judges: never ask it to
+   write, rewrite or split a question or an option.
+3. Call `grill_start` once, then `grill_continue` for each question. Preserve
    the returned run ID, revision, evaluation origin, context revision, and
    evidence references.
-3. If the active question remains weak, use the run's frozen policy and its
-   remaining `research_budget`. Build a `research-with-jev` request for that
+4. A typed refusal (`action=agent_revision`, never `needs_human`) is yours to
+   answer, and only with an action its finding lists in `next_actions` (for a
+   question the grill stored, `lineages` in `grill_get` shows the same set). For
+   `wording_rejected` those are `reformulate` or `split` (a text that is
+   compound, ambiguous, written in the present for a proposed change, or adds
+   detail beyond the sources) and `new_grill_question` (a subject the grill did
+   not decide). `research` is allowed only for a clean wording whose evaluation
+   came out weak, so a wording defect goes to reformulate or split, never to
+   research. You write every reformulation, part and new question. Register the
+   action you chose and the reason in `lineage_action` when the host takes it, and
+   otherwise in the grill record you keep for `to-spec-jev`.
+   - A refused text was never stored, so it is no original, and it returns by what it
+     was. A new question comes back as a new one, with no `lineage`, or opens the new
+     grill question the finding asks for. A refused part of a reformulation or division
+     you declared against a stored question keeps that declaration: send the corrected
+     text with the same `lineage` (the stored `original`, `kind`), `lineage_action` and,
+     for a division, `siblings`, through the equivalence below. Sent as a new question it
+     comes back `needs_human` (`pending_review`), a call to a person for what you solve
+     alone.
+   - A question the grill already stored (`pending` or `stale`) is reformulated or
+     split by declaring `lineage` (`{original, kind}`, with `reformulation` or
+     `split`) on each part, with `lineage_action` (`{action, reason}`, the reason
+     not empty) and, for a division, the other parts in `siblings` (two to ten
+     parts, the first in `question`). Submit the reformulation or division to
+     `jev_equivalence` against the original before sending it, and send the parts
+     when it returns `accept`. The host submits the parts together to the same
+     check, and `equivalence_rejected` (a part adds, or the parts lose, something
+     the original says; its `next_actions` is `revise_parts`) asks you to revise
+     the parts. An equivalence left in review (`action=review`) accepts nothing and
+     finds no defect: do not reword the parts to draw another result. Send them, and
+     the host keeps the turn for a person (`decision_equivalence_review`).
+   - Never resend text identical to one already rejected, under any id:
+     `identical_resubmission` refuses it without counting an attempt. A missing
+     `lineage_action` is `action_not_registered`, and an action outside
+     `next_actions` is `action_not_allowed`: choose again inside the set.
+5. If the active question remains weak with a clean wording (`research` is in its
+   `next_actions`), use the run's frozen policy and its remaining
+   `research_budget`. Build a `research-with-jev` request for that
    exact question and claim, with a broad topic catalog and authorized source
    snapshots. Choose one stable cycle key and call `grill_research_begin` with
-   the current run revision **before** any collection or filtering. Only a
+   the current run revision and `lineage_action` (`research` and the reason)
+   **before** any collection or filtering. Only a
    response with `reservation_acquired=true` owns the external work. A replay
    (`reservation_acquired=false`) must call `grill_get` to reconcile; seeing
    `research_pending` alone does not grant ownership. If its phase is
@@ -67,20 +116,35 @@ Work through the unresolved frontier one question at a time:
    not replace the earlier item, and it does not reopen an answered question.
    Ask a resolved question again only when that question id is in
    `stale_questions`.
-4. Stop after the initial evaluation plus at most three research cycles, within
+6. Stop after the initial evaluation plus at most three research cycles, within
    the run's total budget. Stop earlier for no material novelty, contradiction,
    missing authorization, an unreadable calibration manifest, unavailable service,
    or a closed evidence gate. Operational diagnostics do not trigger more research.
+   A check that did not pass the gate (`decision_check_review`,
+   `decision_equivalence_review`) and the third rejection of a lineage
+   (`lineage_exhausted`) stop it too: a person decides, so collect nothing.
    A host with no manifest researches too: it admits a new source whose Screen and
    Verify pass the confidence policy (`gate.basis=confidence_policy`,
    `calibrated=false`) with the `gate.policy_binding` checked against the collected
    text, question and claim, and an installed manifest admits by its own binding.
    Each cycle shows its `basis`.
    With an active delegation, hand unresolved research to the delivery's bounded
-   adjudication. Without that capability, preserve the precise blocker.
-5. Reuse delegated business policy and existing authority. A fact or choice only
+   adjudication, except a lineage at its third rejection (`lineage_exhausted`),
+   which goes to `human_review` even with a delegation. The research limit of a
+   question (`research_limit`) is judged before its lineage count, so the
+   adjudication still takes that stop. Without that capability, preserve the
+   precise blocker.
+7. Reuse delegated business policy and existing authority. A fact or choice only
    the human can supply remains an exception. Continue independent work and ask
    once with a recommendation and the minimum options. Preserve human restrictions.
+   The lineage count calls the person only at the third rejection of a question's
+   lineage, counted per question and per declared reformulation or division (the
+   initial evaluation does not count, and the lineage count alone calls no one
+   before the third rejection). The other stops call the person as before: the
+   end of the run's global research budget (`research_budget_exhausted`),
+   `evaluation_limit`, `research_limit` and stagnation (after the bounded
+   adjudication when a delegation is in force, at once as `human_fallback` without
+   one), and a check that did not pass the gate.
 
 Treat `action=auto` with `auto_advance` as the selected answer when the server
 returns it for a real decision and names its basis: `gate.basis=confidence_policy`
@@ -99,7 +163,9 @@ A closed gate still has an answer. Do not describe it as a missing response.
 When research is exhausted or stagnant, call `GrillClient.research_handoff`
 with the current state, project and host. It writes a versioned artifact under
 `docs/grills/handoffs`. An active setup delegation routes it to T09 bounded
-adjudication; that handoff grants no extra evaluation and resolves no question.
+adjudication, except the third rejection of a lineage (`lineage_exhausted`),
+which stays with the person; that handoff grants no extra evaluation and
+resolves no question.
 In manual mode show `human_fallback`: alternatives, sources, recorded confidence
 and favorable excerpts. A human choice uses `grill_answer` with `origin=human`.
 Operational diagnostics stay blocked; do not adjudicate them.

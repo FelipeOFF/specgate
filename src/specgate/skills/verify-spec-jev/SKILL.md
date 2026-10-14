@@ -10,7 +10,10 @@ each acceptance criterion as a claim. Do not ask Jev to browse the repository.
 Pack deterministic evidence from the worktree: tracked files, check results,
 commit, and ticket behavior. Keep the packet inside the 64 KB evidence limit.
 
-Call `jev_verify` with stable claim IDs `{ticket-id}:ac-{n}`. Classify claims
+Call `jev_verify` with stable claim IDs `{ticket-id}:ac-{n}`. The criteria passed
+the `jev_check` wording check when the graph was verified: do not reword or split
+one here, and never ask Jev to. A criterion that is compound or ambiguous is a
+defect of the graph; report it back to `to-tickets-jev`. Classify claims
 that require a public repository, registry publish, paid calibration, or a
 provider secret as operational. Those stay in human review even when code
 claims are supported.

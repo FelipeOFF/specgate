@@ -86,15 +86,44 @@ def contained(item: CollectedEvidence, known: Sequence[str]) -> str | None:
     return None
 
 
-def _filter_context(item: CollectedEvidence) -> ContextPacket:
+# The captured text travels in the field the recipe reads (`text` of the screening,
+# `evidence` of the verification) and as the evidence item of the context, the layout
+# the verification of the tickets keeps for the same reason (#148). The artifact is
+# neither: it only points to them instead of sending a third copy.
+CAPTURED = "Texto da fonte capturada, no campo avaliado do pedido (text ou evidence)."
+
+
+def _filter_context(item: CollectedEvidence, *, repeated_artifact: bool = False) -> ContextPacket:
+    """The context of one source; `repeated_artifact` is the layout of earlier clients."""
     return ContextPacket(
         objective=item.question,
         rules=("Avalie somente a fonte capturada para a pergunta e a claim.",),
-        artifact=item.text,
+        artifact=item.text if repeated_artifact else CAPTURED,
         evidence=(Evidence(item.id, item.source, item.revision, item.text),),
         alternatives=(item.claim or item.question, "Evidência insuficiente"),
         gaps=(),
     )
+
+
+def _gates_hold(
+    item: CollectedEvidence,
+    screen: dict[str, Any],
+    verify: dict[str, Any],
+    context: ContextPacket,
+) -> bool:
+    screen_args = {
+        "text": item.text,
+        "purpose": f"Pergunta: {item.question}\nClaim: {item.claim}",
+        "context": asdict(context),
+    }
+    verify_args = {
+        "claims": [{"id": item.id, "text": item.claim}],
+        "evidence": item.text,
+        "context": asdict(context),
+    }
+    return automatic_decision_valid(
+        screen, "jev_screen", screen_args, context
+    ) and automatic_decision_valid(verify, "jev_verify", verify_args, context)
 
 
 def _valid_result(
@@ -110,28 +139,24 @@ def gates_passed(entry: dict[str, Any]) -> bool:
 
     Either basis passes: the confidence policy or a validated manifest. Which one
     the host accepts is its own decision, made where the cycle is admitted.
+
+    The gates bind the request the client sent. A client built before the artifact
+    became a pointer sent the text under it as well, so the host also rebuilds that
+    request from the same captured text, instead of refusing what such a client
+    judged (or what a run stored with it): both layouts carry exactly this evidence.
     """
     try:
         item = CollectedEvidence.model_validate(entry)
-        context = _filter_context(item)
         jev = entry["jev"]
         screen = jev["screen"]
         verify = jev["verify"]
-        screen_args = {
-            "text": item.text,
-            "purpose": f"Pergunta: {item.question}\nClaim: {item.claim}",
-            "context": asdict(context),
-        }
-        verify_args = {
-            "claims": [{"id": item.id, "text": item.claim}],
-            "evidence": item.text,
-            "context": asdict(context),
-        }
         return bool(
             item.claim
             and entry["result"] == "pertinent"
-            and automatic_decision_valid(screen, "jev_screen", screen_args, context)
-            and automatic_decision_valid(verify, "jev_verify", verify_args, context)
+            and any(
+                _gates_hold(item, screen, verify, _filter_context(item, repeated_artifact=old))
+                for old in (False, True)
+            )
         )
     except (KeyError, TypeError, ValueError):
         return False

@@ -7,6 +7,7 @@ from hashlib import sha256
 from typing import Any
 
 from specgate.grill_contracts import GrillError
+from specgate.slices.equivalence import MAX_PARTS
 
 REF_KEYS = ("id", "source", "revision")
 KINDS = ("fidelity", "coverage")
@@ -26,7 +27,19 @@ RESULT_KEYS = (
     "error",
 )
 VERDICT_KEYS = ("id", "verdict", "confidence", "probabilities", "would_auto_accept")
+# What a stored wording check keeps: the shared record, the authority that judged and, for
+# each text, the digest of the text it checked and what the host needs to read it again.
+AUTHORITY_KEYS = (
+    "policy",
+    "recipe",
+    "backend",
+    "provider",
+    "requested_model",
+    "resolved_model",
+)
 _HASH = re.compile(r"[a-f0-9]{64}")
+# A division has at most as many parts as the equivalence tool takes.
+PART_LIMIT = MAX_PARTS
 
 
 def digest(text: str) -> str:
@@ -67,6 +80,131 @@ def _result(value: dict[str, Any]) -> dict[str, Any]:
     return kept
 
 
+_CODE = re.compile(r"[A-Za-z0-9_.:-]{1,80}")
+
+
+def _short(value: Any, limit: int) -> str | None:
+    return value if isinstance(value, str) and 0 < len(value) <= limit else None
+
+
+def _compact_authorities(value: Any) -> dict[str, dict[str, str]]:
+    """The authorities a stored check names, each with the six fields and nothing else."""
+    return {
+        key: {
+            name: found
+            for name in AUTHORITY_KEYS
+            if (found := _short(record.get(name), 200))
+        }
+        for key, record in (value if isinstance(value, dict) else {}).items()
+        if valid_hash(key) and isinstance(record, dict)
+    }
+
+
+def _compact_outcome(entry: dict[str, Any]) -> dict[str, Any]:
+    """What a check kept of how it was judged: the request, the authority, the scores and,
+    when the gate stayed closed, the reason and the error."""
+    row: dict[str, Any] = {
+        name: found
+        for name in ("request_revision", "authority")
+        if (found := valid_hash(entry.get(name)))
+    }
+    scores = entry.get("probabilities")
+    if isinstance(scores, list) and len(scores) <= 8:
+        row["probabilities"] = [
+            item
+            for item in scores
+            if isinstance(item, (int, float)) and not isinstance(item, bool)
+        ]
+    if isinstance(entry.get("reason"), str) and _CODE.fullmatch(entry["reason"]):
+        row["reason"] = entry["reason"]
+    error = entry.get("error")
+    if isinstance(error, dict):
+        row["error"] = {
+            name: found
+            for name, limit in (("code", 80), ("message", 300))
+            if (found := _short(error.get(name), limit))
+        }
+    return row
+
+
+def _compact_checks(checks: Any) -> dict[str, dict[str, Any]]:
+    """The checks of a wording record, each reduced to the shape it must have."""
+    kept: dict[str, dict[str, Any]] = {}
+    for target, entry in (checks if isinstance(checks, dict) else {}).items():
+        if not isinstance(target, str) or not isinstance(entry, dict):
+            continue
+        row: dict[str, Any] = {
+            name: found
+            for name in ("text_revision",)
+            if (found := valid_hash(entry.get(name)))
+        }
+        kept[target] = {**row, **_compact_outcome(entry)}
+    return kept
+
+
+def compact_wording(value: Any) -> dict[str, Any]:
+    """The wording record a verification stores; whatever is not part of it is dropped.
+
+    Each field keeps only the shape it has: a digest is a sha256, a reason is a short code,
+    a probability is a number. A text whose check is dropped reads as unchecked, and a
+    faulty client cannot smuggle research text into the stored artifact through it.
+    """
+    if not isinstance(value, dict):
+        return {}
+    stored: dict[str, Any] = {
+        key: found
+        for key in ("scope_revision", "context_revision")
+        if (found := valid_hash(value.get(key)))
+    }
+    stored["authorities"] = _compact_authorities(value.get("authorities"))
+    stored["checks"] = _compact_checks(value.get("checks"))
+    # The checks of the claims the host derived: the ones it reads, and one digest of the rest.
+    if derived := _compact_checks(value.get("derived")):
+        stored["derived"] = derived
+    clean = value.get("clean")
+    if isinstance(clean, dict) and (requests := valid_hash(clean.get("requests"))):
+        keys = clean.get("authorities")
+        judges = [key for key in (keys if isinstance(keys, list) else []) if valid_hash(key)]
+        if judges:
+            stored["clean"] = {"authorities": judges, "requests": requests}
+    return stored
+
+
+def compact_equivalence(value: Any) -> dict[str, Any]:
+    """The equivalence record a verification stores, one check per original.
+
+    A check keeps the digest of the original and of each part it judged, so the host reads
+    it against the texts it has, and how it was judged, as a wording check does. An original
+    whose check is dropped reads as unchecked.
+    """
+    if not isinstance(value, dict):
+        return {}
+    stored: dict[str, Any] = {
+        key: found
+        for key in ("context_revision",)
+        if (found := valid_hash(value.get(key)))
+    }
+    stored["authorities"] = _compact_authorities(value.get("authorities"))
+    checks = value.get("checks")
+    kept: dict[str, dict[str, Any]] = {}
+    for original, entry in (checks if isinstance(checks, dict) else {}).items():
+        if not isinstance(original, str) or not isinstance(entry, dict):
+            continue
+        row: dict[str, Any] = {}
+        if found := valid_hash(entry.get("original_revision")):
+            row["original_revision"] = found
+        parts = entry.get("parts")
+        if isinstance(parts, dict) and len(parts) <= PART_LIMIT:
+            row["parts"] = {
+                part: found
+                for part, digested in parts.items()
+                if isinstance(part, str) and (found := valid_hash(digested))
+            }
+        kept[original] = {**row, **_compact_outcome(entry)}
+    stored["checks"] = kept
+    return stored
+
+
 def valid_hash(value: Any) -> str | None:
     """The sha256 a stored verification names, or None: nothing is reused without one."""
     return value if isinstance(value, str) and _HASH.fullmatch(value) else None
@@ -89,6 +227,10 @@ def compact_spec_verification(verification: dict[str, Any]) -> dict[str, Any]:
     for kind in KINDS:
         if isinstance(verification.get(kind), dict):
             stored[kind] = _result(verification[kind])
+    if "wording" in verification:
+        stored["wording"] = compact_wording(verification["wording"])
+    if "equivalence" in verification:
+        stored["equivalence"] = compact_equivalence(verification["equivalence"])
     if "sources" in verification:
         stored["sources"] = checked_refs(verification["sources"])
     for name in ("context_revisions", "evidence_revisions"):
@@ -138,6 +280,10 @@ def compact_ticket_verification(verification: dict[str, Any]) -> dict[str, Any]:
     for name in ("results", "confirmations"):
         if name in verification:
             stored[name] = _results(verification[name])
+    if "wording" in verification:
+        stored["wording"] = compact_wording(verification["wording"])
+    if "equivalence" in verification:
+        stored["equivalence"] = compact_equivalence(verification["equivalence"])
     if "sources" in verification:
         stored["sources"] = checked_refs(verification["sources"])
     for name in ("evidence_revision", "context_revision"):

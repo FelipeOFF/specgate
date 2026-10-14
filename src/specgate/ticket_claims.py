@@ -3,9 +3,12 @@
 import json
 import math
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from decimal import Decimal
 from typing import Any
+
+from specgate.decision_lineage import Group
+from specgate.lineage_resolution import Resolution, resolve
 
 SENTENCE_BREAK = re.compile(r"(?<=[.!?;])\s+(?=[A-ZÀ-Ý])")
 LIST_MARKER = re.compile(r"^(?:- |\d+\. )")
@@ -36,17 +39,24 @@ APPENDED = re.compile(
 # evaluated once more with the same input and decided by the mean of the two.
 CONFIRMATION_BAND = Decimal("0.05")
 CONFIRMATION_MISMATCH = "Jev: verification_confirmation_mismatch"
+# The gaps of a verification whose rows are no judgment of the claims the host expects.
+STRUCTURAL = frozenset(
+    {"Jev: verification_claim_mismatch", "Jev: verification_incomplete", CONFIRMATION_MISMATCH}
+)
+COVERAGE_PREFIX = "coverage:"
 
 
 def planning_evidence(
     spec: dict[str, Any], draft: dict[str, Any], sources: list[dict[str, Any]]
 ) -> str:
+    # What the agent registers about its own work is no part of the graph the Jev judges.
+    graph = {name: value for name, value in draft.items() if name != "lineage_actions"}
     return json.dumps(
         {
             "evaluation_scope": "Planning quality, not completed implementation. Check every obligation and real prerequisite against the proposed graph.",
             "approved_spec": spec["body"],
             "spec_revision": spec["revision"],
-            "graph": draft,
+            "graph": graph,
             "research": sources,
         },
         ensure_ascii=False,
@@ -103,7 +113,10 @@ def expected_claims(spec_body: str, draft: dict[str, Any]) -> list[dict[str, str
     for section, start, text in _blocks(spec_body):
         sentences = SENTENCE_BREAK.split(LIST_MARKER.sub("", text, count=1).strip())
         claims.extend(
-            {"id": f"coverage:{start}:{part}", "text": _coverage(section, sentence)}
+            {
+                "id": f"{COVERAGE_PREFIX}{start}:{part}",
+                "text": _coverage(section, sentence),
+            }
             for part, sentence in enumerate(sentences, 1)
         )
     for ticket in draft["tickets"]:
@@ -126,6 +139,90 @@ def expected_claims(spec_body: str, draft: dict[str, Any]) -> list[dict[str, str
         }
     )
     return claims
+
+
+def wording_targets(
+    spec_body: str, draft: dict[str, Any]
+) -> tuple[list[tuple[str, str]], str]:
+    """The acceptance criteria the agent wrote, by `<ticket>:ac-N`, and the approved spec.
+
+    The scope of the wording check of a graph is the spec it decomposes, which is also
+    the first source of its context.
+    """
+    return (
+        [
+            (f"{ticket['id']}:ac-{index}", text)
+            for ticket in draft["tickets"]
+            for index, text in enumerate(ticket["acceptance_criteria"], 1)
+        ],
+        spec_body,
+    )
+
+
+def derived_targets(claims: list[dict[str, str]]) -> list[tuple[str, str]]:
+    """The obligations the host derived from the sentences of the approved spec.
+
+    These are the `coverage:<line>:<sentence>` claims, with the prefix of the obligation, of
+    the problem or of the exclusion. The agent wrote none of them, so a defect found in one
+    is a diagnostic for the maintainer, never a request to rewrite. The other claims of a
+    graph (verticality, blockers, order) judge the graph the agent proposed and are not here.
+    """
+    return [
+        (claim["id"], claim["text"])
+        for claim in claims
+        if claim["id"].startswith(COVERAGE_PREFIX)
+    ]
+
+
+def _criteria(draft: Any) -> dict[str, str]:
+    """The acceptance criteria of a stored or proposed graph, by `<ticket>:ac-N`."""
+    tickets = draft.get("tickets") if isinstance(draft, dict) else None
+    return {
+        f"{ticket['id']}:ac-{index}": text
+        for ticket in (tickets if isinstance(tickets, list) else [])
+        if isinstance(ticket, dict)
+        for index, text in enumerate(ticket.get("acceptance_criteria") or [], 1)
+        if isinstance(text, str)
+    }
+
+
+def earlier_graphs(state: dict[str, Any], *, stored: bool = True) -> list[dict[str, Any]]:
+    """The stored revisions of the graph, newest first.
+
+    A graph being submitted still has the one on the run as its previous revision; a graph
+    already on the run has only its history before it.
+    """
+    current = state.get("tickets")
+    history = state.get("tickets_history")
+    return [
+        *([current] if stored and isinstance(current, dict) else []),
+        *(reversed(history) if isinstance(history, list) else []),
+    ]
+
+
+def ticket_resolution(
+    draft: dict[str, Any],
+    earlier: Sequence[dict[str, Any]],
+    record: Any = None,
+    *,
+    strict: bool = True,
+) -> Resolution:
+    """The criteria lineage of a graph against the stored revisions before it, newest first.
+
+    What the graph declares and what it inherits from the previous revision (a criterion at
+    the same place with the same text, whose equivalence was not accepted). A strict
+    resolution raises the typed refusal of the lineage when an entry cannot be resolved.
+    """
+    return resolve(draft, earlier, _criteria, "criteria_lineage", record, strict=strict)
+
+
+def ticket_groups(draft: dict[str, Any], earlier: Sequence[dict[str, Any]]) -> list[Group]:
+    """The groups of parts and originals the criteria lineage of a graph names.
+
+    `earlier` are the stored revisions before the graph, newest first. Raises the typed
+    refusal of `decision_lineage` when an entry cannot be resolved.
+    """
+    return ticket_resolution(draft, earlier).groups
 
 
 def _cutoff(threshold: float) -> Decimal:

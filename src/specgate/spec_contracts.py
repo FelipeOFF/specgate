@@ -5,9 +5,19 @@ from hashlib import sha256
 from typing import Any, Literal, Self
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
+from specgate.decision_lineage import Lineage
 from specgate.grill_contracts import GrillError, _json
+from specgate.lineage_budget import LineageAction
+from specgate.residual import ResidualClaim
 from specgate.shared.domain.inputs import checked_text
 
 
@@ -23,6 +33,25 @@ class SpecDraft(BaseModel):
     further_notes: str = Field(min_length=1)
     decision_ids: list[str] = Field(min_length=1)
     gaps: list[str] = Field(default_factory=list)
+    # The agent's own record of the decisions it divided or reformulated: for each part,
+    # the id of the decision it replaces in the previous revision of the spec. Empty by
+    # default and left out of the dump when empty, so a spec with no lineage keeps the
+    # contract, and the revision, it always had.
+    decision_lineage: dict[str, Lineage] = Field(default_factory=dict, max_length=200)
+    # What the agent registers before the new evaluation of a spec whose previous revision left
+    # a claim weak: the claim, the action it chose inside the set the host allowed and why.
+    # Empty by default and left out of the dump when empty, like the lineage.
+    lineage_actions: list[LineageAction] = Field(default_factory=list, max_length=50)
+
+    @model_serializer(mode="wrap")
+    def _without_empty_lineage(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        for name in ("decision_lineage", "lineage_actions"):
+            if not data.get(name):
+                data.pop(name, None)
+        return data
 
     def render(self) -> str:
         sections = [
@@ -77,6 +106,7 @@ class SpecAuthorization(BaseModel):
     repositories: list[str] = Field(default_factory=list)
     publication_authorized: bool = False
     reference: str = Field(default="", max_length=2000)
+    residual: list[ResidualClaim] = Field(default_factory=list, max_length=100)
 
 
 class IssueReference(BaseModel):

@@ -3,6 +3,7 @@
 import inspect
 import json
 import math
+from collections.abc import Callable
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -12,13 +13,24 @@ from pydantic import BaseModel, ConfigDict, Field
 from specgate import recipe_inputs
 from specgate.public_gate_revision import RUNTIME_GATES_SHA256
 from specgate.shared.domain import inputs
-from specgate.slices import decide, find, screen, verify
+from specgate.slices import check, decide, equivalence, find, screen, verify
 
-TOOLS = ("jev_verify", "jev_screen", "jev_find", "jev_decide")
+TOOLS = (
+    "jev_verify",
+    "jev_screen",
+    "jev_find",
+    "jev_decide",
+    "jev_check",
+    "jev_equivalence",
+)
 # Which authority produced a gate. `confidence_policy` is a heuristic filter with
 # no validation behind it; only `validated_manifest` rests on a real validation.
 BASIS_POLICY = "confidence_policy"
 BASIS_MANIFEST = "validated_manifest"
+# The tools a calibration run can bind (`calibration.Case.tool`). No rubric measures
+# `jev_check` or `jev_equivalence`, so a manifest that names either is hand-written and
+# never opens it.
+CALIBRATED_TOOLS = ("jev_verify", "jev_screen", "jev_find", "jev_decide")
 PROVENANCE_KEYS = ("backend", "provider", "requested_model", "resolved_model")
 POLICY_BINDING_KEYS = frozenset(
     {
@@ -52,6 +64,10 @@ class GatePolicy(BaseModel):
     find_min_fit: float = Field(default=0.8, ge=0, le=1)
     decide_confidence: float = Field(default=0.8, ge=0.8, lt=1)
     decide_min_probability: float = Field(default=0.5, ge=0, le=1)
+    # A defect probability is decisive only above the first or below the second: between
+    # them, or at either, the Jev is not plain about it. Neither bound may relax.
+    check_min_present: float = Field(default=0.8, ge=0.8, lt=1)
+    check_max_absent: float = Field(default=0.2, gt=0, le=0.2)
 
     @property
     def revision(self) -> str:
@@ -76,7 +92,9 @@ def recipe_versions() -> dict[str, str]:
                 inspect.getsource(recipe_inputs),
             ]
         )
-        for tool, module in zip(TOOLS, (verify, screen, find, decide), strict=True)
+        for tool, module in zip(
+            TOOLS, (verify, screen, find, decide, check, equivalence), strict=True
+        )
     }
 
 
@@ -140,6 +158,8 @@ def policy_scores(tool: str, result: dict[str, Any]) -> dict[str, Any]:
                 "confidence": result["confidence"],
                 "selected_probability": result["probabilities"].get(selected),
             }
+        if tool in {"jev_check", "jev_equivalence"}:
+            return {**result["probabilities"], "max_defect": result["max_defect"]}
     except (KeyError, IndexError, TypeError, AttributeError):
         pass
     return {}
@@ -223,9 +243,47 @@ def candidate_eligible(tool: str, result: dict[str, Any], policy: GatePolicy) ->
                 and selected_probability > policy.decide_min_probability
                 and _unique_maximum(selected_probability, alternatives)
             )
+        if tool == "jev_check":
+            return _defects_eligible(result, policy, check.DEFECTS, check.next_actions)
+        if tool == "jev_equivalence":
+            return _defects_eligible(
+                result, policy, equivalence.DEFECTS, equivalence.next_actions
+            )
     except (KeyError, IndexError, TypeError, ValueError):
         return False
     return False
+
+
+def _defects_eligible(
+    result: dict[str, Any],
+    policy: GatePolicy,
+    names: dict[str, str],
+    next_actions: Callable[[list[str]], list[str]],
+) -> bool:
+    """A check advances when the Jev is plain about every defect and the code agrees.
+
+    The wording check and the equivalence check read their defects the same way. Plain
+    means above `check_min_present` or below `check_max_absent`. The agent picks
+    `defect_at`, so the reported defects and next actions are recomputed from the
+    probabilities: a cutoff that hides or invents a defect never advances.
+    """
+    probabilities = result["probabilities"]
+    if not isinstance(probabilities, dict) or set(probabilities) != set(names):
+        return False
+    values = {key: _probability(probabilities[key]) for key in names}
+    if not all(
+        value > policy.check_min_present or value < policy.check_max_absent
+        for value in values.values()
+    ):
+        return False
+    present = [key for key, value in values.items() if value > policy.check_min_present]
+    defects = result["defects"]
+    return bool(
+        isinstance(defects, list)
+        and len(defects) == len(set(defects))
+        and set(defects) == set(present)
+        and result["next_actions"] == next_actions(present)
+    )
 
 
 def gate_eligible(
@@ -254,7 +312,8 @@ def gate_eligible(
             "resolved_model",
         }
         return bool(
-            report["mode"] == "real"
+            tool in CALIBRATED_TOOLS
+            and report["mode"] == "real"
             and report["split"] == "validation"
             and report["source"] == "provider_http"
             and report["completed"] is True

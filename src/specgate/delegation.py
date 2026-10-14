@@ -26,6 +26,9 @@ from specgate.transport import call_tool
 
 DecisionFn = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
 PROTECTED = {".git", ".agents", ".codex", ".claude", ".specgate", ".env"}
+# Fields a grant gained after the first release. At its default one leaves the revision
+# out, so a grant and the authorizations recorded under it keep the revision they had.
+ADDED_FIELDS = ("rewrite_decisions",)
 
 
 class Delegation(BaseModel):
@@ -39,6 +42,10 @@ class Delegation(BaseModel):
     publications: list[Literal["spec", "tickets", "draft_pr"]] = Field(
         default_factory=list, max_length=3
     )
+    # An operation of its own, not a publication: the agent rewrites or divides a decision
+    # of an approved spec. Only `specgate setup` sets it, and a grant stored before it
+    # existed reads as False.
+    rewrite_decisions: bool = False
     reference: str = Field(default="", max_length=1000)
     expires_at: str | None = None
 
@@ -64,7 +71,13 @@ class Delegation(BaseModel):
 
     @property
     def revision(self) -> str:
-        return sha256(self.model_dump_json().encode()).hexdigest()
+        cls = type(self)
+        unset = {
+            name
+            for name in ADDED_FIELDS
+            if getattr(self, name) == cls.model_fields[name].default
+        }
+        return sha256(self.model_dump_json(exclude=unset or None).encode()).hexdigest()
 
     def active(self, project: Path, host: str) -> bool:
         return (
@@ -453,6 +466,60 @@ def review_authority_valid(
     return bool(
         current
         and current["delegation_revision"] == authorization.get("delegation_revision")
+    )
+
+
+def rewrite_authority(
+    *,
+    project: Path,
+    host: str,
+    repositories: list[str],
+    home: Path | None = None,
+) -> dict[str, Any] | None:
+    """The standing grant of the rewrite of decisions, or None when it does not hold.
+
+    The operation is the person's alone, so neither a publication, a score nor a delegated
+    approval opens it. A repository named here (the one the spec was published to) must be
+    in the grant too. A grant that cannot be read grants nothing.
+    """
+    try:
+        grant = load_delegation(home)
+    except (ValueError, OSError):
+        return None
+    if (
+        not grant.active(project, host)
+        or not grant.rewrite_decisions
+        or not {repo.casefold() for repo in repositories}
+        <= {repo.casefold() for repo in grant.repositories}
+    ):
+        return None
+    return {
+        "delegation_revision": grant.revision,
+        "reference": grant.reference,
+        "project": str(project.resolve()),
+        "repositories": sorted(set(repositories)),
+    }
+
+
+def rewrite_authority_valid(
+    authority: dict[str, Any], *, host: str, home: Path | None = None
+) -> bool:
+    """Check the grant again immediately before the rewrite is written.
+
+    Expired, revoked, without the operation, or changed since it was read: none holds.
+    """
+    project = authority.get("project")
+    if not isinstance(project, str) or not Path(project).is_absolute():
+        return False
+    current = rewrite_authority(
+        project=Path(project),
+        host=host,
+        repositories=authority.get("repositories", []),
+        home=home,
+    )
+    return bool(
+        current
+        and current["delegation_revision"] == authority.get("delegation_revision")
     )
 
 

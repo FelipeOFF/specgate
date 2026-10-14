@@ -138,7 +138,7 @@ python3 -m venv .venv
 - Context sent to the MCP is the evidence you authorized for that call. Model provider keys never leave the server process.
 - The client talks to the host over HTTPS (HTTP only on loopback) and uses the system CAs.
 - No MCP, auth failure, or a protocol major mismatch: the harness continues and the decision stays in review.
-- `action=auto` is not permission to merge, deploy, or publish. Without a calibration manifest the four tools advance only when every confidence and every support, substance, relevance, existence and fit score is strictly above 0.80, the Decide winner has a probability above 0.50 and the Screen injection score is below 0.25, with `calibrated=false` and `gate.basis=confidence_policy`; 0.80 is an uncertainty filter, not accuracy. A manifest that is invalid, altered, revoked or bound to another provider or model keeps the decision in review.
+- `action=auto` is not permission to merge, deploy, or publish. Without a calibration manifest the four tools advance only when every confidence and every support, substance, relevance, existence and fit score is strictly above 0.80, the Decide winner has a probability above 0.50 and the Screen injection score is below 0.25, with `calibrated=false` and `gate.basis=confidence_policy`; 0.80 is an uncertainty filter, not accuracy. `jev_check` advances the same way only when every defect probability is above 0.80 or below 0.20 and its `defects` and `next_actions` follow from them; the client checks that predicate and the binding before it accepts the result. `jev_equivalence`, which checks that a division or reformulation adds and loses nothing against the original, advances under the same two cutoffs. A manifest that is invalid, altered, revoked or bound to another provider or model keeps the decision in review.
 
 ## Uninstall
 
@@ -170,6 +170,8 @@ specgate setup --autonomy until_draft \
   --authorization-reference 'User delegates this delivery until draft PRs'
 ```
 
+`--allow-rewrite` adds the rewrite of decisions of an approved spec, an operation apart from
+the publications that a grant stored before it does not have; `--no-allow-rewrite` removes it.
 Repeat the scope flags to list all planned worktrees and exact commands in the
 same setup. New roots or destinations require an explicit scope update. Project
 and skill configuration cannot expand the grant. Revoke future automation with
