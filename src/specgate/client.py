@@ -39,7 +39,14 @@ from specgate.transport import MCPTransportError, call_tool
 class ReviewRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     objective: str = Field(min_length=1, max_length=8000)
-    tool: Literal["jev_verify", "jev_screen", "jev_find", "jev_decide"]
+    tool: Literal[
+        "jev_verify",
+        "jev_screen",
+        "jev_find",
+        "jev_decide",
+        "jev_check",
+        "jev_equivalence",
+    ]
     arguments: dict[str, Any]
     sources: list[str] = Field(default_factory=list, max_length=50)
     required: list[str] = Field(default_factory=list, max_length=50)
@@ -271,14 +278,15 @@ def confirmed_result(
 
 
 def policy_verification_intact(
-    result: dict[str, Any], context_revision: str | None
+    result: dict[str, Any], context_revision: str | None, tool: str = "jev_verify"
 ) -> bool:
-    """Whether a stored policy-basis Verify still holds, from what it kept alone.
+    """Whether a stored policy-basis result of `tool` still holds, from what it kept alone.
 
     The request and the context were confirmed when it was judged. What is left
     to check is that the binding still names this client's policy and recipe and
     the context the verification stored, and that the stored scores clear the
-    same predicate again.
+    same predicate again. A Verify is the default; the wording check of a spec and
+    of a ticket graph (`jev_check`) is read the same way.
     """
     try:
         gate = result["gate"]
@@ -286,13 +294,13 @@ def policy_verification_intact(
         return bool(
             context_revision
             and result.get("context_revision") == context_revision
-            and result.get("tool") == "jev_verify"
+            and result.get("tool") == tool
             and result.get("mode") == "real"
             and gate["scope"] == "recommendation"
             and gate["execution_authorized"] is False
-            and _policy_binding_intact(result, gate, "jev_verify", policy)
+            and _policy_binding_intact(result, gate, tool, policy)
             and candidate_eligible(
-                "jev_verify",
+                tool,
                 {**result, "action": "review", "reason": "real_calibration_pending"},
                 policy,
             )
@@ -332,6 +340,9 @@ async def review_request(
         "jev_verify": ["supports", "contradicts", "unsupported"],
         "jev_screen": ["pass", "review", "block", "skip"],
         "jev_find": ["answered", "partial", "absent"],
+        # What the check can allow next, so the context names what it will compare.
+        "jev_check": ["judge", "reformulate", "split", "new_grill_question"],
+        "jev_equivalence": ["accept", "revise_parts"],
         "jev_decide": [
             Item.model_validate(item).text for item in arguments.get("options", [])
         ]

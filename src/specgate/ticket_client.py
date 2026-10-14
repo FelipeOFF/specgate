@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from specgate.beads_tickets import BeadsTicketTracker
+from specgate.claim_equivalence import check_equivalence
+from specgate.claim_wording import check_derivation, check_wording
 from specgate.client import confirmed_result
 from specgate.context import (
     ContextPacket,
@@ -21,6 +23,7 @@ from specgate.destination import DestinationError, ProjectTracker, resolve_desti
 from specgate.grill_client import GrillClient
 from specgate.grill_contracts import GrillError
 from specgate.jira_tickets import JiraTicketTracker
+from specgate.lineage_budget import not_researchable, research_action
 from specgate.payload import PayloadTooLarge
 from specgate.research import (
     ResearchRequest,
@@ -34,13 +37,18 @@ from specgate.research_ledger import (
     resumable,
 )
 from specgate.research_restore import restore_refs
+from specgate.residual import AGENT_ACTION, handoff_route
 from specgate.spec_contracts import IssueReference
 from specgate.ticket_claims import (
     confirmation_rows,
+    derived_targets,
+    earlier_graphs,
     expected_claims,
     near,
     planning_evidence,
+    ticket_groups,
     weak,
+    wording_targets,
 )
 from specgate.ticket_contracts import (
     TicketAuthorization,
@@ -51,7 +59,7 @@ from specgate.ticket_contracts import (
     ticket_body,
     ticket_marker,
 )
-from specgate.ticket_residual import ENDED, next_cycle, remaining
+from specgate.ticket_residual import next_cycle, remaining
 from specgate.ticket_reuse import (
     change,
     history_of,
@@ -62,6 +70,7 @@ from specgate.ticket_reuse import (
 )
 from specgate.tracker import GitHubTracker, TicketTracker, TrackerError
 from specgate.verification_refs import context_digest, digest, source_refs
+from specgate.wording import AGENT_CODES, AgentRefusal
 
 VERIFY_BATCH_SIZE = 20
 # The graph travels once, in the evidence; the context only points to it.
@@ -260,6 +269,8 @@ class TicketClient(GrillClient):
             )
         except PayloadTooLarge as overflow:
             return overflow.review(state)
+        except AgentRefusal as rejected:
+            return {**state, **rejected.refusal()}
         if verification is None:
             return _review(state, "verification_failed")
         if vocabulary().revision != domain.revision:
@@ -333,6 +344,34 @@ class TicketClient(GrillClient):
         )
         context = json.loads(json.dumps(context))
         prior = state.get("tickets", {}).get("verification", {})
+        # A criterion the agent divided or reformulated is checked against the original it
+        # replaces before anything else: a part that adds or loses content refuses the graph
+        # here, and an unresolvable lineage is refused before the Jev is called.
+        divisions = ticket_groups(draft.model_dump(), earlier_graphs(state))
+        equivalence = (
+            await check_equivalence(
+                self._call, divisions, context, prior.get("equivalence")
+            )
+            if divisions
+            else None
+        )
+        # The criteria the agent wrote are checked against the approved spec before any
+        # claim is judged: a defect refuses the graph here, with no evaluation spent.
+        targets, scope = wording_targets(state["spec"]["body"], draft.model_dump())
+        wording = await check_wording(
+            self._call, targets, scope, context, prior.get("wording")
+        )
+        # The obligations the host derived from the spec are checked in the same pass, after
+        # the criteria: a refusal comes first and spends no call on them. A defect here is a
+        # diagnostic for the maintainer, never a refusal, and the check is not required.
+        wording = await check_derivation(
+            self._call,
+            derived_targets(claims),
+            wording,
+            scope,
+            context,
+            prior.get("wording"),
+        )
         threshold = state.get("workflow_policy", {}).get("confidence", 0.8)
         # The latest stored judgment of each claim, even if the last verification
         # left the claim out.
@@ -423,6 +462,8 @@ class TicketClient(GrillClient):
             )
         return {
             "claims": claims,
+            "wording": wording,
+            **({"equivalence": equivalence} if equivalence else {}),
             "results": results,
             "confirmations": confirmations,
             "sources": refs,
@@ -502,6 +543,8 @@ class TicketClient(GrillClient):
             )
         except PayloadTooLarge as overflow:
             return overflow.review(state)
+        except AgentRefusal as rejected:
+            return {**state, **rejected.refusal()}
         if verification is None:
             return _review(state, "verification_failed")
         return await self.submit(
@@ -578,6 +621,8 @@ class TicketClient(GrillClient):
                 idempotency_key=idempotency_key,
                 artifact_revision=graph["revision"],
                 claim_id=claim_id,
+                # The agent chooses research and registers why before the cycle opens.
+                lineage_actions=[research_action(claim_id, request.reason)],
             )
             if reserved.get("error", {}).get("code") == "verification_gate_mismatch":
                 # Another authority judged the weak verdict: the claim is verified
@@ -599,6 +644,7 @@ class TicketClient(GrillClient):
                     idempotency_key=idempotency_key,
                     artifact_revision=graph["revision"],
                     claim_id=claim_id,
+                    lineage_actions=[research_action(claim_id, request.reason)],
                 )
             if reserved.get("error"):
                 return {**state, **reserved}
@@ -658,6 +704,8 @@ class TicketClient(GrillClient):
             verification = await self._verify_plan(state, draft, sources)
         except PayloadTooLarge as overflow:
             return overflow.review(state)
+        except AgentRefusal as rejected:
+            return {**state, **rejected.refusal()}
         if verification is None:
             return _review(state, "verification_failed")
         submitted = await self.submit(
@@ -711,6 +759,8 @@ class TicketClient(GrillClient):
             verification = await self._verify_plan(state, draft, earlier)
         except PayloadTooLarge as overflow:
             return overflow.review(state)
+        except AgentRefusal as rejected:
+            return {**state, **rejected.refusal()}
         if verification is None:
             return _review(state, "verification_failed")
         submitted = await self.submit(
@@ -748,7 +798,19 @@ class TicketClient(GrillClient):
             if pending:
                 claim_id, reason = pending["question_id"].removeprefix("tickets:"), None
             else:
-                claim_id, reason = next_cycle(state, weak_ids)
+                if "next_actions" not in state.get("tickets", {}):
+                    # What a write returns carries no derived actions: read them.
+                    state = await self.get(run_id)
+                    if state.get("error"):
+                        break
+                allowed = state.get("tickets", {}).get("next_actions", {})
+                claim_id, reason = next_cycle(state, weak_ids, allowed)
+                if reason == AGENT_ACTION:
+                    # What is left is the agent's own to change, not a research to run.
+                    return {
+                        **state,
+                        **not_researchable(claim_id, allowed.get(claim_id, [])).refusal(),
+                    }
             if reason:
                 state = _review(state, reason)
                 break
@@ -772,6 +834,9 @@ class TicketClient(GrillClient):
             operational = state.get("research_stopped", {}).get(f"tickets:{claim_id}")
             if operational in OPERATIONAL:
                 state = _review(state, operational)
+        if state.get("error", {}).get("code") in AGENT_CODES:
+            # The agent revises its own text; there is nothing to hand to a person.
+            return state
         project = self.project or Path.cwd()
         grant = load_delegation(self.home)
         handoff = {
@@ -781,13 +846,9 @@ class TicketClient(GrillClient):
             "continuations": state.get("ticket_research_continuations", []),
             "reason": state.get("error", {}).get("code"),
             "research_attempts": state.get("research_attempts", []),
-            "route": (
-                "bounded_adjudication"
-                if state.get("error", {}).get("code") in ENDED
-                else "delivery_exception"
-            )
-            if grant.active(project, self.url)
-            else "human_review",
+            "route": handoff_route(
+                state.get("error", {}).get("code"), grant.active(project, self.url)
+            ),
             "delegation_revision": grant.revision
             if grant.active(project, self.url)
             else None,

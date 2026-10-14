@@ -4,9 +4,18 @@ import re
 from graphlib import CycleError, TopologicalSorter
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+)
 
+from specgate.decision_lineage import Lineage
 from specgate.grill_contracts import GrillError
+from specgate.lineage_budget import LineageAction
+from specgate.residual import ResidualClaim
 from specgate.shared.domain.inputs import checked_text
 
 
@@ -28,6 +37,24 @@ class TicketPlan(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
     tickets: list[TicketDraft] = Field(min_length=1, max_length=50)
     gaps: list[str] = Field(default_factory=list, max_length=50)
+    # The agent's own record of the acceptance criteria it divided or reformulated: for each
+    # part (`<ticket>:ac-N`), the criterion it replaces in the previous revision of the
+    # graph (`<ticket>:ac-M`). Empty by default and left out of the dump when empty.
+    criteria_lineage: dict[str, Lineage] = Field(default_factory=dict, max_length=1500)
+    # What the agent registers before the new evaluation of a graph whose previous revision left
+    # a claim weak: the claim, the action it chose inside the set the host allowed and why.
+    # Empty by default and left out of the dump when empty, like the lineage.
+    lineage_actions: list[LineageAction] = Field(default_factory=list, max_length=50)
+
+    @model_serializer(mode="wrap")
+    def _without_empty_lineage(
+        self, handler: SerializerFunctionWrapHandler
+    ) -> dict[str, Any]:
+        data: dict[str, Any] = handler(self)
+        for name in ("criteria_lineage", "lineage_actions"):
+            if not data.get(name):
+                data.pop(name, None)
+        return data
 
     def order(self) -> list[str]:
         ids = [ticket.id for ticket in self.tickets]
@@ -70,15 +97,6 @@ class TicketPlan(BaseModel):
             raise GrillError(
                 "dependency_cycle", "As dependências contêm um ciclo."
             ) from None
-
-
-class ResidualClaim(BaseModel):
-    """A claim the maintainer accepts below the threshold, with its verdict and reason."""
-
-    model_config = ConfigDict(extra="forbid", strict=True)
-    claim_id: str = Field(min_length=1, max_length=200)
-    verdict: Literal["verified", "unsupported", "contradicted"]
-    reason: str = Field(min_length=1, max_length=2000)
 
 
 class TicketAuthorization(BaseModel):

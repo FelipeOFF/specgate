@@ -43,6 +43,25 @@ def applicable_adjudication(
     return None
 
 
+def adjudicated(
+    state: dict[str, Any], artifact: str, revision: dict[str, Any] | None
+) -> str | None:
+    """The claim a judgment recommends revising in this very revision of the artifact (`spec` or
+    `tickets`), or None: the repair it asks for is part of that judgment."""
+    if revision is None:
+        return None
+    prefix = f"{artifact}:"
+    return next(
+        (
+            row["gap_id"].removeprefix(prefix)
+            for row in state.get("flow_adjudications", [])
+            if str(row.get("gap_id", "")).startswith(prefix)
+            and applicable_adjudication(state, row["gap_id"], revision.get("revision"))
+        ),
+        None,
+    )
+
+
 def stop(state: dict[str, Any], question_id: str) -> str | None:
     """The recorded stop that closes the research of a question.
 

@@ -9,6 +9,22 @@ Receive the question or claim and the authorized source scope in the invocation.
 Reuse the harness's current context and tools. Do not require setup, a project
 context document, the automatic loop, or the later research filter.
 
+The `next_actions` of the question or claim come from the caller's invocation (`lineages`
+of `grill_get`; `next_actions` of `spec_get` or `tickets_get`), never from the request JSON,
+which refuses the field as extra. When the caller names them, collect only if they include `research`. One
+whose actions are `reformulate`, `split` or `new_grill_question` (a wording defect),
+whose only action is `review_derivation` (a derived claim), that has no action at all,
+or whose lineage reached its third rejection (`lineage_exhausted`) is not a research
+request: return it to the caller without collecting. The host refuses such a
+reservation: `decision_check_review` first, on a grill question whose wording it holds
+or whose check did not pass the gate; `action_not_allowed` for a research outside the
+`next_actions`; `no_action_available` for a spec claim with no action; and
+`lineage_exhausted` for a spent lineage. An invocation that names none, as a standalone gap
+or `specgate research-with-jev request.json` before setup, is collected as before.
+The request JSON may carry `reason`, why research is the action chosen; the client
+registers it before the cycle opens. Jev only selects a topic here: it never
+writes the question, the claim or the catalog.
+
 Present a broad catalog tied to this gap: relevant behavior, constraints,
 interfaces, alternatives, failure cases, security/privacy, operations and factual
 premises. Include only applicable themes, with stable IDs and meaningful text.

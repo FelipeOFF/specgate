@@ -32,10 +32,18 @@ e do contexto, provider e modelo resolvido) contra o pedido que ele enviou; a pa
 do host não basta. Resposta sem `gate.basis` vem de um host anterior a este
 contrato: leve o passo à revisão, nunca a um sucesso inferido.
 
-O piloto local disponibiliza `jev_verify`, `jev_screen` e `jev_find` via MCP
-autenticado, com mock heurístico. Confirme que as tools estão conectadas no harness.
-Não apresente simulação como chamada real ao Jev. Os adapters de harness aplicam
-somente escolhas autorizadas pelos mesmos gates deste fluxo.
+O piloto local disponibiliza `jev_verify`, `jev_screen`, `jev_find`, `jev_check` e
+`jev_equivalence` via MCP autenticado, com mock heurístico. Confirme que as tools
+estão conectadas no harness. Não apresente simulação como chamada real ao Jev. Os
+adapters de harness aplicam somente escolhas autorizadas pelos mesmos gates deste
+fluxo.
+
+`jev_check` testa a formulação de uma decisão ou claim antes do envio, e
+`jev_equivalence` confere uma divisão ou reformulação contra o original. As duas só
+julgam: o Jev não gera, reescreve nem divide texto, e a checagem é um filtro de
+incerteza, sem acurácia medida. A recusa tipada (`action=agent_revision`) é do agente,
+que escolhe só entre as `next_actions` e registra o motivo; `grill-with-jev`,
+`to-spec-jev` e `to-tickets-jev` dizem como.
 
 No Grok Bot, esta é uma skill privada cooperativa: anexe também o Custom MCP
 connector `specgate` e consulte `jev_decide` antes de encaminhar uma pergunta
