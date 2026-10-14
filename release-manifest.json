@@ -3,7 +3,7 @@
     ".github/workflows/ci.yml": "32b28f2e92a7d415a1687d4cadf540c84adfff4b8910be6388920eae662e7c3a",
     ".github/workflows/release.yml": "b0b998ab6881f9c173e880624a984a8cedc00402db6e4ccea3415725b8fa69c9",
     "LICENSE": "4c38401ce1ce9aee51321b14df43ce9c7827beae38522fd87b79d1bec2753114",
-    "README.md": "0ccb0c676197e5e04a11462a1cd77cbf2edd4b6e380fa36b9d03af5035d9d3b5",
+    "README.md": "0b054b8541556182ccbc474c5bda79ecea731b6e65e1cabebc81921280f1818a",
     "docs/specgate-cover.jpg": "1d1237e72bc63eb64e2b86707c520ebb6062cb4bd99e19313ffddc872a5b5635",
     "licenses/mcp-python-sdk-MIT.txt": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d",
     "pyproject.toml": "6297d4010acdff27a14569aff68830774f2bfdb4be848c3b739735050ee9bb8d",
@@ -106,7 +106,7 @@
   "provenance": {
     "generator": "scripts/export_public_release.py",
     "source_repository": "FelipeOFF/specgate-server-mcp",
-    "source_revision": "5f7da7347254007b6d9659a25fbdf97e20eeb304"
+    "source_revision": "b7c9d866780435ab5c1d89e03d87c8d0c97ceae3"
   },
   "schema": 1,
   "version": "0.1.0"

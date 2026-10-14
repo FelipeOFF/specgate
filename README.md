@@ -88,11 +88,11 @@ Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `D
 | Skill | What it does |
 | --- | --- |
 | `triage-jev` | Classify a tracker issue. Labels change only after the maintainer confirms. |
-| `grill-with-jev` | Close the scope. Up to three evaluations per question, each retry with new evidence. |
+| `grill-with-jev` | Close the scope. Each question and option is checked with `jev_check` before Jev decides. A rewording or split that `jev_equivalence` accepts counts as new content; up to four evaluations per question, and the third low-confidence rejection goes to a person. |
 | `research-with-jev` | Collect evidence for one gap from authorized sources, after Jev picks the topic. |
 | `research-filter-jev` | Filter that packet into relevant, contradictory, rejected and repeated evidence. |
-| `to-spec-jev` | Authorized research and a versioned spec. `jev_verify` covers the claims. |
-| `to-tickets-jev` | Vertical ticket graph. One repository per ticket. |
+| `to-spec-jev` | Authorized research and a versioned spec. Each decision is checked with `jev_check` before `jev_verify` covers the claims; a typed refusal names the actions allowed. |
+| `to-tickets-jev` | Vertical ticket graph. One repository per ticket. Each acceptance criterion is checked with `jev_check` before verification. |
 | `implement-spec-jev` | Walk the unblocked frontier in a worktree. |
 | `verify-spec-jev` | Last gate: every acceptance criterion against worktree evidence, before a draft PR. |
 | `iterate-with-jev` | Judge a `/iterate` comment with `jev_verify` before any push. Does not merge. |
