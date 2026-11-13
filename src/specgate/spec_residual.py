@@ -13,14 +13,17 @@ The cycles of a spec claim are the ones the research of the spec runs (question
 `spec:<claim>`): three attempts per claim and the shared budget of the policy, with
 no continuation. Once the publication of the revision starts, no cycle runs on a
 spec that left the review, so the acceptance holds whatever the ledger becomes.
+
+The list also accepts the wording of a decision (`wording:decision-<id>`) whose check stayed
+outside the gate with no probability above the cutoff (ADR 0036); it has no cycle to end.
 """
 
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from specgate import residual
 from specgate.grill_contracts import GrillError
-from specgate.residual import ENDED, PUBLICATION_STARTED, remaining
+from specgate.residual import ENDED, PUBLICATION_STARTED, WORDING, Wordings, remaining
 from specgate.ticket_claims import evaluations_of, scored
 
 # The attempts a spec claim may draw; the research of the spec reserves with the same.
@@ -33,6 +36,7 @@ RESIDUAL_RULE = {
     "accepts": "a claim of the current spec revision whose evaluation is verified, below the threshold",
     "requires": "no automatic research cycle left (attempt limit, shared budget or stagnation, with or without a calibration manifest) and a human origin",
     "never": "a contradicted or unsupported evaluation, a claim a research source contradicted, or a structural gap of the verification",
+    "wording": "the wording of a decision whose check stayed outside the gate with the five probabilities kept and none above 0.80, listed as wording:<target> with the verdict review",
     "ends": "with any new revision of the spec or, while the spec is in review, a research cycle that reopens; once the publication starts and the spec is out of the review the acceptance holds",
 }
 REFUSALS = {
@@ -107,7 +111,7 @@ def _claim(
     entry: dict[str, Any],
     row: dict[str, Any] | None,
     started: bool,
-    reviewed: bool,
+    reviewed: str | None,
 ) -> dict[str, Any]:
     """One accepted claim, or the refusal that keeps it out."""
     if row is None:
@@ -121,7 +125,7 @@ def _claim(
         budget,
         publication_started=started,
         own=QUESTIONS,
-        reviewed=reviewed,
+        reviewed=reviewed or False,
     )
     return {
         "id": entry["claim_id"],
@@ -140,30 +144,36 @@ def accept(
     origin: str,
     gaps: list[str],
     threshold: float,
-    reviewed: Collection[str] = frozenset(),
+    reviewed: Mapping[str, str] | None = None,
+    wordings: Wordings | None = None,
 ) -> dict[str, Any] | None:
     """The record of the accepted claims; None for an empty list, else all or none.
 
     Raises GrillError with the first refusal. `gaps` are the verification gaps of
     the spec under the threshold, so a structural gap, which names no claim, cannot
     be accepted. A spec whose publication started has no cycle left to run and keeps
-    the acceptance it was made under. `reviewed` are the claims whose only action is the
-    maintainer's review of their derivation: no cycle runs for them, so their cycles ended.
+    the acceptance it was made under. `reviewed` maps the claims whose only action is the
+    maintainer's to where their cycles end: no cycle runs for them, so their cycles ended.
+    `wordings` are the decisions of the revision, as the host derives them, with their checks:
+    a `wording:<target>` is decided from them alone.
     """
     if not entries:
         return None
     started = publication_started(state, artifact)
     rows = rows_of(artifact.get("verification", {}))
     open_claims = {gap.removeprefix("Jev: ") for gap in gaps}
+    ended = reviewed or {}
     claims = residual.accepted(
         entries,
         origin=origin,
-        claim_of=lambda entry: _claim(
+        claim_of=lambda entry: residual.wording_claim(entry, wordings, _refused)
+        if entry["claim_id"].startswith(WORDING)
+        else _claim(
             state,
             entry,
             rows.get(entry["claim_id"]) if entry["claim_id"] in open_claims else None,
             started,
-            entry["claim_id"] in reviewed,
+            ended.get(entry["claim_id"]),
         ),
     )
     if claims is None:

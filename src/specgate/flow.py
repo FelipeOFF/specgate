@@ -47,7 +47,12 @@ from specgate.flow_revision import (
 )
 from specgate.gate_policy import BASIS_MANIFEST
 from specgate.grill_client import GrillClient
-from specgate.grill_contracts import GrillQuestion, QuestionAction, QuestionLineage
+from specgate.grill_contracts import (
+    GrillQuestion,
+    QuestionAction,
+    QuestionLineage,
+    held_by_policy,
+)
 from specgate.implementation_client import (
     DeliveryManifest,
     ImplementationClient,
@@ -595,6 +600,8 @@ class FlowClient(GrillClient):
                     state,
                     {"stage": "grill", "code": "human_decision_required", "question": question["id"]},
                 )
+            if (resent := await self._resend(state, key, plan)) is not None:
+                return resent
             if (reworded := await self._held(state, plan)) is not None:
                 return reworded
             prompt = await plan.adapters.harness.research(state, question["id"])
@@ -609,6 +616,28 @@ class FlowClient(GrillClient):
                 ),
             )
         return await self._ask(state, key, plan)
+
+    async def _resend(self, state: dict[str, Any], key: str, plan: _Plan) -> dict[str, Any] | None:
+        """A question the policy held before the Jev was called goes back as the harness lists it.
+
+        The Jev never judged it, so no research applies (ADR 0037): the repaired packet is judged,
+        and the same one is refused with `context_incomplete`, the agent's to repair. A question the
+        harness no longer lists is left to the research, which answers the same refusal.
+        """
+        pending = state["pending"]
+        if not held_by_policy(pending.get("evaluation") or {}):
+            return None
+        question_id = pending["question"]["id"]
+        listed = next((item for item in plan.questions if item.id == question_id), None)
+        if listed is None:
+            return None
+        plan.asking = question_id
+        return await self._refused(
+            state["id"],
+            await self.continue_run(
+                state["id"], state["revision"], idempotency_key=key, question=listed
+            ),
+        )
 
     @staticmethod
     def _unresolved(

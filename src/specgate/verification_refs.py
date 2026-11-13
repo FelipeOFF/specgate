@@ -6,8 +6,8 @@ from collections.abc import Iterable, Mapping
 from hashlib import sha256
 from typing import Any
 
-from specgate.grill_contracts import GrillError
 from specgate.slices.equivalence import MAX_PARTS
+from specgate.wording import AgentRefusal
 
 REF_KEYS = ("id", "source", "revision")
 KINDS = ("fidelity", "coverage")
@@ -40,6 +40,83 @@ AUTHORITY_KEYS = (
 _HASH = re.compile(r"[a-f0-9]{64}")
 # A division has at most as many parts as the equivalence tool takes.
 PART_LIMIT = MAX_PARTS
+INVALID_VERIFICATION = "invalid_verification"
+# The top-level keys the host reads: those `SpecClient._verify_draft` and
+# `TicketClient._verify_plan` send.
+SPEC_KEYS = frozenset(
+    {
+        "claims",
+        *KINDS,
+        "wording",
+        "equivalence",
+        "sources",
+        "context_revisions",
+        "evidence_revisions",
+    }
+)
+GRAPH_KEYS = frozenset(
+    {
+        "claims",
+        "results",
+        "confirmations",
+        "wording",
+        "equivalence",
+        "sources",
+        "evidence_revision",
+        "context_revision",
+    }
+)
+# What a client sent with the texts before the hashes; the host takes it and drops it.
+LEGACY_KEYS = frozenset({"context", "evidence", "history"})
+# The records the host writes in a stored graph and derives again on every submit: a graph
+# read back and sent again carries them.
+GRAPH_DERIVED_KEYS = frozenset({"confirmation", "reuse"})
+_NAME_LIMIT = 40
+_NAMES_SHOWN = 10
+
+
+class InvalidVerification(AgentRefusal):
+    """A verification the client did not build, refused before anything is stored.
+
+    It is the agent's to correct, by submitting the verification the client builds, and no
+    person is called. It stays out of `AGENT_CODES`, which name a text the composed flow
+    revises: the flow builds every verification with the client, so there it can only mean
+    a broken client, which the flow hands to a person.
+    """
+
+    def __init__(self, message: str, findings: list[dict[str, Any]]) -> None:
+        super().__init__(INVALID_VERIFICATION, message, findings)
+
+
+def checked_keys(
+    verification: dict[str, Any], read: frozenset[str], kept: frozenset[str], client: str
+) -> None:
+    """Refuse a verification with a top-level key no client sends, or with none the host
+    reads, which compacted would be stored empty. `kept` are the keys the host takes and
+    then drops or replaces. Only the names, truncated, go back to the agent."""
+    known = read | kept
+    unknown = [str(key) for key in verification if key not in known]
+    if unknown:
+        shown = [
+            key if len(key) <= _NAME_LIMIT else key[:_NAME_LIMIT] + "…"
+            for key in unknown[:_NAMES_SHOWN]
+        ]
+        omitted = len(unknown) - len(shown)
+        more = f" e mais {omitted}" if omitted else ""
+        found = f"Chaves não reconhecidas: {', '.join(shown)}{more}."
+        finding: dict[str, Any] = {"problem": "unknown_keys", "keys": shown}
+        if omitted:
+            finding["omitted"] = omitted
+    elif not any(key in read for key in verification):
+        found, finding = "Nenhuma chave que o host lê.", {"problem": "no_known_key"}
+    else:
+        return
+    raise InvalidVerification(
+        "A verificação não tem o formato do cliente do Specgate, e nada foi gravado. "
+        f"Monte-a com {client} ou com `specgate flow` do cliente público, sem editar o "
+        f"que ele devolve, e envie de novo. {found}",
+        [finding],
+    )
 
 
 def digest(text: str) -> str:
@@ -62,9 +139,9 @@ def checked_refs(sources: Any) -> list[dict[str, str]]:
         or any(not isinstance(row.get(key), str) for key in REF_KEYS)
         for row in rows
     ):
-        raise GrillError(
-            "invalid_verification",
+        raise InvalidVerification(
             "Informe cada fonte da verificação com id, origem e revisão.",
+            [{"problem": "source_ref"}],
         )
     return source_refs(rows)
 
@@ -218,9 +295,13 @@ def _hashes(value: Any) -> dict[str, str]:
 
 
 def compact_spec_verification(verification: dict[str, Any]) -> dict[str, Any]:
-    """Drop context, evidence, history and source text before a spec stores it."""
+    """Drop context, evidence, history and source text before a spec stores it.
+
+    A key no client sends is refused, never dropped (`checked_keys`).
+    """
     if not verification:
         return verification
+    checked_keys(verification, SPEC_KEYS, LEGACY_KEYS, "SpecClient.synthesize")
     stored: dict[str, Any] = {}
     if "claims" in verification:
         stored["claims"] = verification["claims"]
@@ -271,9 +352,18 @@ def _results(value: Any) -> list[dict[str, Any]]:
 
 
 def compact_ticket_verification(verification: dict[str, Any]) -> dict[str, Any]:
-    """Drop context, evidence, history and source text before a graph stores it."""
+    """Drop context, evidence, history and source text before a graph stores it.
+
+    A key no client sends is refused, never dropped (`checked_keys`).
+    """
     if not verification:
         return verification
+    checked_keys(
+        verification,
+        GRAPH_KEYS,
+        LEGACY_KEYS | GRAPH_DERIVED_KEYS,
+        "TicketClient.synthesize",
+    )
     stored: dict[str, Any] = {}
     if "claims" in verification:
         stored["claims"] = verification["claims"]

@@ -8,7 +8,10 @@ scope the grill decided. The code reads each result the same way on both sides.
   typed refusal of `specgate.wording`, spends no evaluation and opens no research.
 - A check that passed the gate without a defect lets the main judgment go on.
 - Any other check (the mock, an error, a probability at the cutoff, a host with a manifest)
-  keeps the text in review.
+  keeps the text in review. A check outside the gate whose probabilities show a defect above
+  the cutoff refuses the text too, as one that passed would (ADR 0036): the agent reformulates
+  or splits it. One whose probabilities show none is a residual a person may accept, and one
+  that kept no probabilities (an error, the mock) waits for a new verification.
 
 The host repeats the last two rules from what the verification stored: a text with no clean
 check that passed the gate, bound to this client's policy and recipe, is a gap, so a client
@@ -68,6 +71,9 @@ ERROR = "decision_check_error"
 # The one action of a weak claim whose derivation has a defect: it belongs to the maintainer,
 # who is the only one that can change how the host derived the claim.
 REVIEW_DERIVATION = "review_derivation"
+# The one action of a text whose check stayed outside the gate with no defect above the cutoff:
+# the maintainer accepts it as a residual (`wording:<target>`), never the agent nor a delegation.
+ACCEPT_WORDING_RESIDUAL = "accept_wording_residual"
 # The fields of the wording record that hold the claims the host derived.
 DERIVED = "derived"
 CLEAN = "clean"
@@ -120,6 +126,15 @@ def is_text(value: Any) -> bool:
     return isinstance(value, str) and bool(value)
 
 
+def present(scores: Mapping[str, float], kind: Kind = WORDING) -> list[str]:
+    """The defects whose probability is above the cutoff of presence, in the order of the tool.
+
+    The cutoff is the policy's (`check_min_present`), compared strictly, never the `defect_at`
+    the agent sent.
+    """
+    return [key for key in kind.defects if scores[key] > GatePolicy().check_min_present]
+
+
 def rebuilt(
     wording: Mapping[str, Any], entry: Mapping[str, Any], kind: Kind = WORDING
 ) -> dict[str, Any] | None:
@@ -142,7 +157,7 @@ def rebuilt(
     ):
         return None
     scores = dict(zip(kind.defects, probabilities, strict=True))
-    present = [key for key in kind.defects if scores[key] > GatePolicy().check_min_present]
+    found = present(scores, kind)
     provenance = {key: authority[key] for key in PROVENANCE_KEYS}
     return {
         "tool": kind.tool,
@@ -156,8 +171,8 @@ def rebuilt(
         "request_revision": request,
         "probabilities": scores,
         "max_defect": max(scores.values()),
-        "defects": present,
-        "next_actions": kind.actions(present),
+        "defects": found,
+        "next_actions": kind.actions(found),
         "gate": {
             "passed": True,
             "basis": BASIS_POLICY,
@@ -215,6 +230,28 @@ def judge(wording: Any, target: str, text: str, scope: str) -> tuple[State, list
     return _judge(wording, "checks", target, text, scope)
 
 
+def review_probabilities(
+    wording: Any, target: str, text: str, scope: str
+) -> dict[str, float] | None:
+    """The five probabilities a check the gate did not pass kept for this text and scope.
+
+    None for a check that passed the gate, for no check of this text and scope, and for one
+    that kept no valid probabilities (an error, the transport, the mock): only a new
+    verification says more of that text. The probabilities come from the client with no
+    authority, as everything a check in review stores does (ADR 0036).
+    """
+    if judge(wording, target, text, scope)[0] != "review":
+        return None
+    probabilities = probabilities_of(wording["checks"][target].get("probabilities"))
+    return None if probabilities is None else dict(zip(DEFECTS, probabilities, strict=True))
+
+
+def review_defects(wording: Any, target: str, text: str, scope: str) -> list[str] | None:
+    """The defects above the cutoff that a check outside the gate kept; None with no probabilities."""
+    probabilities = review_probabilities(wording, target, text, scope)
+    return None if probabilities is None else present(probabilities)
+
+
 def wording_gaps(wording: Any, targets: Sequence[Target], scope: str) -> list[str]:
     """One gap per text that has no clean check that passed the gate."""
     gaps = []
@@ -260,15 +297,21 @@ def claim_actions(
     wording: State | None = None,
     defects: Sequence[str] = (),
     derivation: Sequence[str] = (),
+    held: Sequence[str] | None = None,
 ) -> list[str]:
     """What the code allows to do with a claim, by the cause of its weakness.
 
     `wording` is what the check of the text found; None means no check applies to the
     claim, as for one the host derived. A text with a defect takes the actions of the
     defect (reformulate or split, or a new grill question for a subject the grill did
-    not decide) whatever its score; a text whose check has not passed the gate waits for
-    a person. A clean text is researched when unsupported, its contradiction is accepted
-    when confident, and a supported one needs nothing.
+    not decide) whatever its score. A clean text is researched when unsupported, its
+    contradiction is accepted when confident, and a supported one needs nothing.
+
+    `held` holds the defects above the cutoff that the probabilities of a check outside the
+    gate show (`review_defects`), or None when it kept none. A defect there takes its actions,
+    as one that passed the gate would; no defect leaves the text to the maintainer, who
+    accepts it as a residual (ADR 0036). A check that kept no probabilities, or no check,
+    leaves nothing to do but a new verification.
 
     `derivation` holds the defects a check that passed the gate found in a claim the host
     derived. The agent did not write that text and cannot rewrite it, so the claim gets
@@ -276,6 +319,8 @@ def claim_actions(
     split or a new grill question. A derived claim whose check did not pass the gate has
     no defect to act on and is routed by the evidence, as before.
     """
+    if wording == "review" and held is not None:
+        return next_actions(list(held)) if held else [ACCEPT_WORDING_RESIDUAL]
     if wording in {"review", "missing"}:
         return []
     if wording == "defective":
@@ -288,13 +333,15 @@ def claim_actions(
 
 
 def _finding(
-    target: str, defects: list[str], probabilities: Any, position: int
+    target: str, defects: list[str], probabilities: Any, position: int, *, passed: bool = True
 ) -> dict[str, Any]:
     """Copied from the check result: the defects, the actions and the probabilities.
 
     The id of a decision with no label is a digest, and the refusal stores nothing the
     agent could look it up in, so the finding of a decision also says where it stands in
-    the draft (counted from 1). An acceptance criterion is named by its place already.
+    the draft (counted from 1). An acceptance criterion is named by its place already. A
+    finding of a check outside the gate says so (`gate_passed: false`), with only the
+    defects above the cutoff.
     """
     return {
         "target": target,
@@ -302,6 +349,7 @@ def _finding(
         "defects": list(defects),
         "next_actions": next_actions(defects),
         "probabilities": dict(zip(DEFECTS, probabilities, strict=True)),
+        **({} if passed else {"gate_passed": False}),
     }
 
 
@@ -364,7 +412,8 @@ def stored_entry(
         if isinstance(error, dict) and is_text(error.get("code"))
         else "gate_closed"
     )
-    if probabilities is not None:
+    if probabilities is not None and result.get("mode") == "real":
+        # Only the Jev in real mode judged: the mock's lexical cues route nothing (ADR 0036).
         entry["probabilities"] = probabilities
     if isinstance(error, dict):
         entry["error"] = {
@@ -430,8 +479,9 @@ async def check_wording(
 
     An identical request is checked once, and a clean check stored for the very same
     request is kept. Raises `WordingRejected` when a check passed the gate with a
-    defect, before the caller spends any evaluation, and `PayloadTooLarge` when the host
-    reports the request above the limit.
+    defect, or stayed outside it with a real-mode probability above the cutoff, before
+    the caller spends any evaluation, and `PayloadTooLarge` when the host reports the
+    request above the limit.
     """
     arguments, revisions, wording = _requests(targets, scope, context)
     before: Any = prior if isinstance(prior, dict) else {}
@@ -461,10 +511,15 @@ async def check_wording(
     findings = []
     for position, (target, text) in enumerate(targets, 1):
         state, defects = judge(wording, target, text, scope)
-        if state == "defective":
+        outside = review_defects(wording, target, text, scope)
+        if state == "defective" or outside:
             findings.append(
                 _finding(
-                    target, defects, wording["checks"][target]["probabilities"], position
+                    target,
+                    outside or defects,
+                    wording["checks"][target]["probabilities"],
+                    position,
+                    passed=state == "defective",
                 )
             )
     if findings:

@@ -40,7 +40,7 @@ generic: the action the agent registers, the refusal codes and the digest.
 """
 
 import json
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from hashlib import sha256
 from typing import Any, Literal
 
@@ -66,7 +66,12 @@ EXHAUSTED = "lineage_exhausted"
 NO_ACTION = "no_action_available"
 # A derived claim whose derivation the host diagnosed: its only action is the maintainer's.
 DERIVATION_REVIEW = "derivation_review"
-MAINTAINER_ACTIONS = frozenset({"review_derivation"})
+# A text whose wording check stayed outside the gate with no defect above the cutoff: the
+# maintainer accepts it as a residual (ADR 0036), and its cycles end there.
+WORDING_RESIDUAL = "wording_residual"
+# Each action only the maintainer takes, with the end of the cycles of a claim it is all there is for.
+MAINTAINER_ENDS = {"review_derivation": DERIVATION_REVIEW, "accept_wording_residual": WORDING_RESIDUAL}
+MAINTAINER_ACTIONS = frozenset(MAINTAINER_ENDS)
 # What a draft records about the agent's own work, not what the artifact says.
 RECORDS = frozenset({"lineage_actions", "decision_lineage", "criteria_lineage"})
 Action = Literal[
@@ -92,6 +97,10 @@ DEFAULT_REASON = (
 )
 NO_ACTION_MESSAGE = (
     "Nenhuma ação está permitida ao agente para esta claim: a decisão vai para a revisão humana."
+)
+WORDING_RESIDUAL_MESSAGE = (
+    "A única ação desta claim é do mantenedor, que aceita a formulação como resíduo "
+    "(wording:<alvo>) ou não: a pesquisa não abre ciclo para ela."
 )
 EXHAUSTED_MESSAGE = (
     "O artefato chegou à terceira rejeição: as claims fracas vão para a revisão humana, que "
@@ -128,6 +137,17 @@ def registered(actions: Sequence[LineageAction], claim: str) -> list[LineageActi
 def maintainer_only(actions: Collection[str]) -> bool:
     """Whether the maintainer's review is all there is for a claim: nothing is the agent's."""
     return bool(actions) and set(actions) <= MAINTAINER_ACTIONS
+
+
+def maintainer_end(actions: Collection[str]) -> str:
+    """Where the cycles of a claim only the maintainer acts on end: the review of its derivation
+    (`derivation_review`) or the acceptance of its wording as a residual (`wording_residual`)."""
+    return MAINTAINER_ENDS[min(set(actions) & MAINTAINER_ACTIONS)]
+
+
+def maintainer_ends(allowed: Mapping[str, Sequence[str]]) -> dict[str, str]:
+    """The weak claims only the maintainer acts on, with where their cycles end."""
+    return {claim: maintainer_end(found) for claim, found in allowed.items() if maintainer_only(found)}
 
 
 def counted(allowed: Mapping[str, Sequence[str]]) -> list[str]:
@@ -302,6 +322,25 @@ def content_digest(draft: Mapping[str, Any], *inputs: Any) -> str:
     return sha256(raw.encode()).hexdigest()
 
 
+def evaluated(
+    stored: Sequence[dict[str, Any] | None],
+    last: str,
+    content: Callable[[dict[str, Any]], str],
+) -> dict[str, Any] | None:
+    """The first stored revision, of the ones given newest first, whose content is `last`: the
+    one the record evaluated last. None for none, and for one stored before the draft was kept."""
+    return next(
+        (
+            found
+            for found in stored
+            if isinstance(found, dict)
+            and isinstance(found.get("draft"), dict)
+            and content(found) == last
+        ),
+        None,
+    )
+
+
 def rejected(state: Mapping[str, Any], artifact: str, digest: str) -> bool:
     """Whether an evaluation of the artifact already came out weak on this content."""
     record = _record(state, artifact)
@@ -376,6 +415,7 @@ def evaluate(
     attempt: Mapping[str, Any],
     on_purpose: Collection[str] = (),
     adjudicated: str | None = None,
+    derive: Callable[[str], Mapping[str, Sequence[str]] | None] | None = None,
 ) -> None:
     """Refuse a new revision the budget of the artifact does not let through, then record it.
 
@@ -392,6 +432,10 @@ def evaluate(
     `adjudicated` is the claim a bounded adjudication judged on the previous revision: its repair
     is the one revision the third rejection lets through, and only while that claim is the only
     weak one left (`alone`).
+    `derive` gives, from the content of the last evaluation the record holds, the sets the code
+    derives from it now. The registration answers to them as well as to the sets the record kept,
+    so a record written before the code changed the actions of a cause still takes the action the
+    read offers (ADR 0036).
 
     Every check is made against the last evaluation the record holds, never against a revision
     the Jev did not judge in between. Raises the refusal, and nothing is recorded: any revision
@@ -429,9 +473,10 @@ def evaluate(
     if not (acted or governed):
         actions = [LineageAction.model_validate(item) for item in attempt.get("actions", [])]
         # A claim whose limit the count reached has no action left for the agent.
+        derived = derive(record["last"]) if derive else None
         owed = {
             claim: found
-            for claim, found in record.get("weak", {}).items()
+            for claim, found in _joined(record.get("weak", {}), derived or {}).items()
             if not _spent(record, claim)
         }
         check_actions(actions, pending(owed))
@@ -441,6 +486,16 @@ def evaluate(
 
 def _sets(weak: Mapping[str, Sequence[str]]) -> dict[str, list[str]]:
     return {claim: list(found) for claim, found in weak.items()}
+
+
+def _joined(
+    kept: Mapping[str, Sequence[str]], derived: Mapping[str, Sequence[str]]
+) -> dict[str, list[str]]:
+    """The weak claims of both sets, each with the actions of either."""
+    return {
+        claim: list(dict.fromkeys([*kept.get(claim, ()), *derived.get(claim, ())]))
+        for claim in {**kept, **derived}
+    }
 
 
 def _settle(

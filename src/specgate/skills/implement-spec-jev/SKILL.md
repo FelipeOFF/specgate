@@ -12,6 +12,13 @@ duplicate roots, undeclared repositories, credentials, session references, and
 secrets in the manifest. This manifest lists repositories and checks; it is not a
 calibration manifest, which no step of this flow asks for.
 
+The spec and the tickets are published only through Specgate (`spec_publication_begin` and
+`spec_publication_record`, `tickets_publication_begin` and `tickets_publication_record`).
+Implement only a graph published that way. Never create, edit, link or label a spec or a
+ticket yourself with `gh`, `glab`, a tracker API or CLI, and never offer or recommend that,
+not even when the person asks for a way out: a spec or a graph still in review goes back to
+`to-spec-jev` or `to-tickets-jev`.
+
 Observe every published ticket before selecting work. The unlocked frontier holds
 the tickets whose blockers are complete; a draft pull request never completes a
 ticket. A ticket that waits only on open blockers may start before their merge,
@@ -74,3 +81,10 @@ smallest missing decision; never change a technical gate to avoid that decision.
 `specgate flow` runs these stages after grill, research, spec and tickets and ends
 at the same draft pull requests, without a calibration manifest. It resumes from
 the state the host keeps and never merges, deploys or force-pushes.
+
+When the delivery ends, done or blocked, call `feedback_submit` once with
+`stage=implementation`, the `outcome` (`completed` or `blocked`) and an honest review of the
+tool: what worked, the difficulties, the error codes you saw and the tools involved. Never
+include transcripts, secrets, ids or paths of a harness session, or the person's words
+verbatim. On a host without `feedback_submit`, go on without it. A feedback refusal never
+blocks the flow.

@@ -14,15 +14,18 @@ the research ledger records (attempt limit, shared budget or stagnation), never
 for want of a manifest. Once the publication starts, no cycle runs on a graph
 that left the review, so the acceptance holds whatever the ledger or the host's
 gates become.
+
+The list also accepts the wording of an acceptance criterion (`wording:<ticket>:ac-N`) whose
+check stayed outside the gate with no probability above the cutoff (ADR 0036).
 """
 
-from collections.abc import Collection, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from specgate import residual
 from specgate.grill_contracts import GrillError
 from specgate.research_ledger import limits
-from specgate.residual import ENDED, PUBLICATION_STARTED, remaining
+from specgate.residual import ENDED, PUBLICATION_STARTED, WORDING, Wordings, remaining
 from specgate.ticket_claims import (
     confirmation_rows,
     effective_cutoff,
@@ -37,6 +40,7 @@ RESIDUAL_RULE = {
     "accepts": "a claim of the current graph whose every evaluation is verified, below the threshold",
     "requires": "the symmetric confirmation for a claim near the threshold, no automatic research cycle left (attempt limit, shared budget or stagnation, with or without a calibration manifest), and a human origin",
     "never": "a contradicted or unsupported evaluation, a claim a research source contradicted, or a structural gap of the verification",
+    "wording": "the wording of an acceptance criterion whose check stayed outside the gate with the five probabilities kept and none above 0.80, listed as wording:<target> with the verdict review",
     "ends": "with any new revision of the graph, a change of the threshold that leaves the claim unconfirmed, or, before the publication starts, an authorized continuation that reopens the cycles; once the publication starts the acceptance holds",
 }
 REFUSALS = {
@@ -107,7 +111,7 @@ def _claim(
     second: dict[str, Any] | None,
     threshold: float,
     publication_started: bool,
-    reviewed: bool,
+    reviewed: str | None,
 ) -> dict[str, Any]:
     """One accepted claim, or the refusal that keeps it out."""
     if first is None:
@@ -123,7 +127,7 @@ def _claim(
         limit,
         budget,
         publication_started=publication_started,
-        reviewed=reviewed,
+        reviewed=reviewed or False,
     )
     return {
         "id": entry["claim_id"],
@@ -154,16 +158,19 @@ def accept(
     origin: str,
     gaps: list[str],
     threshold: float,
-    reviewed: Collection[str] = frozenset(),
+    reviewed: Mapping[str, str] | None = None,
+    wordings: Wordings | None = None,
 ) -> dict[str, Any] | None:
     """The record of the accepted claims; None for an empty list, else all or none.
 
     Raises GrillError with the first refusal. `gaps` are the verification gaps of
     the graph, so a structural gap, which names no claim, cannot be accepted. The
     research runs while the graph is in review, so a graph whose publication started
-    has no cycle left to run and keeps the acceptance it was made under. `reviewed` are
-    the claims whose only action is the maintainer's review of their derivation: no cycle
-    runs for them, so their cycles ended.
+    has no cycle left to run and keeps the acceptance it was made under. `reviewed` maps
+    the claims whose only action is the maintainer's to where their cycles end: no cycle
+    runs for them, so their cycles ended. `wordings` are the acceptance criteria of the
+    graph, as the host derives them, with their checks: a `wording:<target>` is decided from
+    them alone.
     """
     if not entries:
         return None
@@ -172,10 +179,13 @@ def accept(
     first = {row.get("id"): row for row in first_rows(verification)}
     second = confirmation_rows(verification) or {}
     open_claims = {gap.removeprefix("Jev: ") for gap in gaps}
+    ended = reviewed or {}
     claims = residual.accepted(
         entries,
         origin=origin,
-        claim_of=lambda entry: _claim(
+        claim_of=lambda entry: residual.wording_claim(entry, wordings, _refused)
+        if entry["claim_id"].startswith(WORDING)
+        else _claim(
             state,
             entry,
             first.get(entry["claim_id"])
@@ -184,7 +194,7 @@ def accept(
             second.get(entry["claim_id"]),
             threshold,
             started,
-            entry["claim_id"] in reviewed,
+            ended.get(entry["claim_id"]),
         ),
     )
     if claims is None:

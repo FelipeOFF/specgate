@@ -108,6 +108,19 @@ substitui. Sem manifesto elas não são skills públicas, então o roteamento as
 revisão e uma pessoa escolhe aquela skill e revisão (`HumanReview`); sem isso o fluxo
 para em `skill_load_unconfirmed`.
 
+A spec e os tickets só são publicados pelo Specgate: `spec_publication_begin` e
+`spec_publication_record`, `tickets_publication_begin` e `tickets_publication_record`, que
+`SpecClient.publish`, `TicketClient.publish` e o `specgate flow` chamam. O agente nunca
+publica com `gh`, `glab`, API ou CLI do tracker, e nunca oferece nem recomenda isso, mesmo
+quando a pessoa pede uma saída. Um artefato em revisão com lacunas que bloqueiam e sem
+`next_actions` do agente é um beco sem saída; a espera pela resposta da pessoa não é. O
+agente o mantém não publicado, relata as lacunas e o que cada uma exige, oferece só as saídas
+internas da fase (no grill, a resposta da pessoa pelo `grill_answer`; na spec, a aceitação
+humana do resíduo, onde couber, ou o `spec_reject`, que reabre o grill; nos tickets, também o
+`tickets_research_extend`), registra `feedback_submit` com `outcome=blocked` e para.
+Nunca diga que o Jev ou o Specgate está fora do ar sem um erro de provider ou de transporte
+devolvido por uma tool. `grill-with-jev`, `to-spec-jev` e `to-tickets-jev` dizem como.
+
 Use apenas dados autorizados da tarefa. Exclua segredos e identificadores,
 caminhos ou transcripts de sessões dos harnesses do contexto transmitido.
 

@@ -42,7 +42,7 @@ from specgate.research_ledger import (
     resumable,
 )
 from specgate.research_restore import restore_research
-from specgate.residual import AGENT_ACTION, handoff_route
+from specgate.residual import AGENT_ACTION, handoff_route, with_exits
 from specgate.shared.domain.inputs import Item
 from specgate.spec_claims import keeps_researched_decision
 from specgate.spec_contracts import (
@@ -1035,11 +1035,14 @@ class SpecClient(GrillClient):
         ):
             return _review(state, "destination_adapter_missing")
         artifact = state.get("spec")
-        if not artifact or artifact["status"] not in {"ready", "published"}:
-            return _review(state, "spec_review_required")
-        # The raw gaps stay on record; the ones the maintainer accepted do not block.
-        if remaining(artifact.get("gaps", []), artifact.get("residual_acceptance")):
-            return _review(state, "spec_review_required")
+        if (
+            not artifact
+            or artifact["status"] not in {"ready", "published"}
+            # The raw gaps stay on record; the ones the maintainer accepted do not block.
+            or remaining(artifact.get("gaps", []), artifact.get("residual_acceptance"))
+        ):
+            exits = (artifact or {}).get("review_exits")
+            return with_exits(_review(state, "spec_review_required"), exits)
 
         def authorized() -> bool:
             return review_authority_valid(

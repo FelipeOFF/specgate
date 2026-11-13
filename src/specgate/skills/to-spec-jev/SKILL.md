@@ -5,22 +5,45 @@ description: Turn a completed grill into a researched, Jev-verified specificatio
 
 # To Spec with Jev
 
-Start from the completed grill record. Load the installed `to-spec` skill and
-preserve its template and testing-seam guidance. It comes from another source, not
-from the Specgate set, and synthesis needs its `<spec-template>` block, which this
-skill does not carry. Without a manifest it is not a public skill: routing keeps it
-in review until a person picks that skill and revision (`HumanReview`); without
-that, `specgate flow` stops at `skill_load_unconfirmed`.
+## Happy path
 
-Before synthesis, research the remaining technical and domain claims from
-authorized project sources. Record every source and content revision. Do not use
-secrets, harness transcripts, or an artifact as evidence for itself. If no
-additional source is available, keep the spec in human review as
-`research_insufficient`.
+1. Resume the grill run `grill-with-jev` recorded (`grill_get` with its `run_id`, at
+   `grill_complete`): one grill run feeds one spec.
+2. Load the installed `to-spec` skill for its template and testing seams only.
+3. Research the remaining claims from authorized project sources.
+4. Write the draft from this run's active decisions, label each implementation decision
+   (`**slug:**`) and test it with `jev_check`.
+5. Submit only through the client (`SpecClient.synthesize` or `specgate flow`).
+6. Answer a typed refusal or a weak claim only with its `next_actions`.
+7. Review the exact revision once, delegated or by a person.
+8. Publish only through Specgate (`spec_publication_begin`, `spec_publication_record`).
+9. Call `feedback_submit` once and hand off to `to-tickets-jev`.
 
-Synthesize the spec from the original scope, active decisions, domain vocabulary,
-and research packet. Preserve public decision IDs and do not invent answers for
-unresolved business questions.
+A spec left in review with no action of yours stops at the dead end below.
+
+## Sources and the grill run
+
+Load the installed `to-spec` skill and use only its template and testing seams: its step
+that publishes to the tracker with `ready-for-agent` does not apply here. It comes from
+another source, not from the Specgate set, and synthesis needs its `<spec-template>` block,
+which this skill does not carry. Without a manifest it is not a public skill: routing keeps
+it in review until a person picks that skill and revision (`HumanReview`); without that,
+`specgate flow` stops at `skill_load_unconfirmed`.
+
+Record every research source and content revision. Do not use secrets, harness
+transcripts, or an artifact as evidence for itself. Without an additional source, keep the
+spec in human review as `research_insufficient`. Preserve public decision IDs and do not
+invent answers for unresolved business questions.
+
+The spec cites exactly the active decisions of the grill run it is recorded in
+(`decision_mismatch` otherwise). A decision of another run, or a detail that never went
+through the grill, is outside the sources: Jev finds it `unsupported` or `beyond_sources`.
+Take each such detail to `grill_continue` on the same run (it reopens the grill and makes the
+spec stale; finish it again) or list it as pending; never open another `grill_start`. Write
+each decision atomic and in the proposed mode. A delivery too large for one spec
+(`spec_too_large`, above 48 KB) becomes several specs, each with its own grill run.
+
+## Wording and typed refusals
 
 Test each implementation decision you wrote with `jev_check` before sending the draft
 (`text` is the decision, `scope` the original scope with the active grill decisions,
@@ -29,16 +52,17 @@ the draft changes. The id has three forms: the bare `slug` keys `decision_lineag
 its `original`; `decision-<slug>` is the target of a `wording_rejected` finding;
 `fidelity:decision-<slug>` is the claim of `lineage_actions` and `spec_research_begin`.
 Send the draft when every check passed the gate (`action=auto`) with
-`next_actions=["judge"]`. A check left in review (`action=review`) clears nothing and
-finds no defect: do not reword a decision just to draw another result. Send the draft
-anyway: the client runs the same check before `jev_verify`, and the host keeps a decision
-whose check did not pass the gate as the gap `wording_check_review`, with no
-`next_actions`, for a person. When the `fidelity:decision-<slug>` claim of that decision
-is also weak, the research ends in `no_action_available` (to `human_review` even with a
-delegation); when it is strong, the gap stays on the spec, the research ends with no
-handoff and the spec stays in review for a person. The check is an uncertainty filter
-with no measured accuracy. Jev only judges: never ask it to write, rewrite or split a
-decision.
+`next_actions=["judge"]`. A check left in review (`action=review`) clears nothing: do not
+reword a decision to draw another result. Send the draft anyway: the client runs the same
+check before `jev_verify`, and the host keeps a decision whose check did not pass the gate
+as the gap `wording_check_review`. Its actions follow the recorded probabilities: a
+defect above 0.80 names yours (`reformulate`, `split` or `new_grill_question`), and the
+client already refuses that draft as `wording_rejected` with `gate_passed: false`, answered
+as any wording defect; with none above 0.80 the only action is the maintainer's
+`accept_wording_residual`; a check with no probabilities needs a new verification.
+[The residual acceptance](references/residual-acceptance.md) says where its research ends.
+The check is an uncertainty filter with no measured accuracy. Jev only judges: never ask it
+to write, rewrite or split a decision.
 
 A typed refusal (`action=agent_revision`, never `needs_human`) is yours to answer, and
 only with an action the finding or the weak claim lists in `next_actions` (`spec_get`
@@ -71,134 +95,117 @@ person, and a delegated rewrite is refused (`rewrite_equivalence_unverified`). A
 identical to a revision already rejected is `identical_resubmission`, refused without
 counting.
 
-The claims the server derives (`coverage:scope`, `coverage:<turn>`) are not yours to
-reword. A defect there shows in `derivation_diagnostics` with `review_derivation` as the
-only action: pass the diagnostic to the maintainer. The research loop ends with the
-handoff `derivation_review`, to `human_review` even with a delegation. Never
-reformulate, split or research that claim.
+A claim the server derives (`coverage:*`) is not yours: for `review_derivation` in
+`derivation_diagnostics`, pass the diagnostic to the maintainer (`derivation_review`); read
+[the derived claims](references/derived-claims.md).
 
-Use `jev_verify` to check the problem, solution, and implementation decisions
-against the original scope, active grill decisions, and research. Preserve each
-verdict and its evidence revision. Check coverage of the original scope and every
-active grill decision separately. Every blocking claim needs confidence and
-support strictly above the frozen workflow threshold, with a minimum of 0.80.
-A strong average cannot compensate for a weak claim. Without a manifest the
-verdicts advance under the confidence policy (`gate.basis=confidence_policy`,
-`calibrated=false`), and the score is an uncertainty filter, not measured accuracy.
-The client confirms each `gate.policy_binding` against the request and context it
-sent. A result without `gate.basis`, with a binding it did not confirm, or judged by
-a different authority than the other results keeps the spec in review, never an
-inferred success.
+## Verification and research
+
+Submit only through the public client: `SpecClient.synthesize` (or `specgate flow`) tests the
+wording, runs `jev_verify` and sends the verification it built to `spec_submit`. Never build
+`verification` by hand in a direct `spec_submit` call: the host refuses an unknown shape
+(`invalid_verification`). `jev_verify` judges fidelity and the coverage of the scope and of
+each active grill decision. Every blocking claim needs confidence
+and support strictly above the frozen workflow threshold, with a minimum of 0.80; a strong
+average cannot compensate for a weak claim. Without a manifest the verdicts advance under the
+confidence policy (`gate.basis=confidence_policy`, `calibrated=false`), and the score is an
+uncertainty filter, not measured accuracy. The client confirms each `gate.policy_binding`
+against the request and context it sent. A result without `gate.basis`, with a binding it did
+not confirm, or judged by a different authority than the other results keeps the spec in
+review, never an inferred success.
 
 For a weak claim with `research` in its `next_actions`, reuse `research-with-jev`
 and `research-filter-jev`. Reserve the attempt through `spec_research_begin` before
 collection, bound to the exact spec revision and `fidelity:<id>` or `coverage:<id>`, with
 `lineage_actions` (`research` and the reason). Record the hash-addressed filtered
 packet through `spec_research_record`; only admitted independent evidence permits
-reevaluation. The public package ships `SpecClient.research_spec`, which takes a
-research planner and an optional repair callback. Reevaluate weak or materially
-changed claims, retaining strong unchanged verdicts and all earlier results.
+reevaluation. `SpecClient.research_spec` runs this cycle and keeps strong unchanged
+verdicts and all earlier results.
 
 Allow at most three additional cycles per claim within the run's shared research
 budget. Changing the draft or idempotency key does not reset the budget: the cycles of a
-decision count under its id, so label each implementation decision (`**slug:**`), because a repair
-that rewrites an unlabelled one is refused (`decision_id_changed`). Stop on
-no new evidence, conflicting sources, an unreadable calibration manifest or an
-uncertain external result. A host with no manifest researches too: it admits new
-evidence by the confidence policy, and an installed manifest by its own binding.
-Resume an existing intent before attempting another collection.
-Persistent gaps go to the delivery's bounded adjudication or exception report,
-except a weak claim with no action (`no_action_available`, as a check left in review
-leaves it), the third rejection and the derivation diagnostic below, which go to a person (not the research limit of a single
-weak claim, below); include alternatives, sources, scores and reasons without asking
-repeatedly.
+decision count under its id, and a repair that rewrites an unlabelled one is refused
+(`decision_id_changed`). Stop on no new evidence, conflicting sources, an unreadable
+calibration manifest or an uncertain external result. A host with no manifest researches
+too: it admits new evidence by the confidence policy, and an installed manifest by its own
+binding. Resume an existing intent before another collection. Persistent gaps go to the
+delivery's bounded adjudication or exception report, except a weak claim with no action
+(`no_action_available`, as a check left in review with no probabilities leaves it) or with
+only the maintainer's (`wording_residual`), the third rejection and the derivation
+diagnostic above, which go to a person (not the research limit of a single weak claim,
+below). A `payload_too_large` result is a size, not a failure
+of Jev: read [the payload limit](references/payload-limit.md).
 
-The spec has one counter. The initial evaluation does not count; each later evaluation
-with new content that ends with a weak claim is a rejection. Call the person at the
-third rejection (`lineage_exhausted`): every weak claim goes to `human_review` even with
-a delegation, except the research limit of a single weak claim, which bounded
-adjudication still judges. With several weak claims the person may be called before the
-third rejection of one of them; that deviation is accepted. The person also enters when
-the global research budget ends (`research_budget_exhausted`), after the bounded adjudication under
-a delegation.
-
-A `payload_too_large` result (`error.code`, with `size` and `limit` in bytes) means the
-request passed the host's 64 KB limit (or its 256 KB HTTP body), not that Jev or the
-provider failed. Stop in review and show the code, the size and the limit; never retry
-it unchanged, raise the limit or spend another research cycle on it. Shrink the request
-(fewer or shorter sources) and resume the same idempotency key: a reservation already
-made resumes without a new one. After admission it stays in evaluation; before it, the
-client has already reported the size to the host (sizes and ids, never content), which
-keeps the reservation in `collecting` for that same key to collect again. Never collect
-again from a bare `collecting` reservation: without that report it is an unknown
-outcome.
+The spec counts its rejections, and the third (`lineage_exhausted`) calls the person, even
+with a delegation: read [the rejection counter](references/rejection-counter.md).
 
 Keep the spec, source hashes, verdict history and testing seams in versionable
-`docs/specs/` files inside the project. Collection and filter packets stay in
-`docs/research/`. These records allow another harness to resume the same revision.
-Contradicted, unsupported or below-threshold claims remain visible gaps and keep
-publication in review, unless a person accepts the residual (below).
+`docs/specs/` files and the research packets in `docs/research/`, so another harness can
+resume the same revision. A weak claim stays a visible gap; a person may accept only one
+still `verified` below the threshold whose cycles ended, never a contradicted or unsupported
+one.
 
-Review the exact artifact once. Read the current setup delegation and explicit
-instructions already given for this delivery. When they cover the project,
-destination and publication, call MCP `spec_review` after fidelity and coverage
-gates pass. Send the exact artifact revision and authorization with
-`seams_approved=true`, `publication_authorized=true`, `origin=automated`, the
-global `delegation_revision`, canonical `project`, approved `repositories` and
-the separate authorization `reference`. Passing gates only recommend
-(`execution_authorized` stays `false`): a score never replaces the human grant to
-publish for this repository, host, operation and exact revision. The public client
-exposes `specgate.delegation.publication_authority` and `verification_allows_review`
-to prepare these fields and check gates; `SpecClient.review_delegated` runs the same
-review through the public client.
-Never manufacture a human acceptance or overwrite an existing human rejection.
+## Review
+
+Review the exact artifact once. When the setup delegation and the instructions already
+given cover the project, destination and publication, call MCP `spec_review` after fidelity
+and coverage pass, with the exact revision, `seams_approved=true`,
+`publication_authorized=true`, `origin=automated`, the global `delegation_revision`,
+canonical `project`, approved `repositories` and the separate authorization `reference`.
+Passing gates only recommend (`execution_authorized` stays `false`): a score never replaces
+the human grant to publish for this repository, host, operation and exact revision.
+`specgate.delegation.publication_authority` and `verification_allows_review` prepare these
+fields; `SpecClient.review_delegated` runs the same review. Never manufacture a human
+acceptance or overwrite an existing human rejection. In manual mode, present one
+consolidated review; an explicit rejection calls `spec_reject` and returns to the
+unresolved scope. A missing grant or persistent technical gap becomes one exception with
+the blocked action, the research done, a recommendation and only the alternatives the
+person must choose between. Continue independent work.
 
 Never rewrite or split a decision of an approved spec on your own. Only
 `SpecClient.rewrite_decisions` does it (`spec_submit` with `rewrite`), and only while a
-delegation in force includes the operation `rewrite_decisions`, which no publication,
-score or delegated approval grants: the person adds it with
-`specgate setup --allow-rewrite`. The client reads that grant with
-`specgate.delegation.rewrite_authority` before asking for any text and again right
-before writing (`rewrite_not_authorized` when it is expired, revoked, edited or lacks
-the operation). The host writes only if each original's equivalence passed the gate and
-only the implementation decisions and their `decision_lineage` changed
-(`equivalence_rejected`, `rewrite_equivalence_unverified`, `rewrite_out_of_scope`). The
-rewrite approves nothing: the revision returns to review, the ticket graph becomes
-stale, and the pull request records the rewrite with the original decision
-(`## Reescritas delegadas`). Without the grant the defective decision goes to the
-person as an exception; an ordinary synthesis over an approved spec is no way around
-it.
+delegation in force includes the operation `rewrite_decisions`, which the person adds with
+`specgate setup --allow-rewrite`; the pull request records it under
+`## Reescritas delegadas`. Read [the delegated rewrite](references/delegated-rewrite.md)
+before it.
 
-A missing grant or persistent technical gap becomes one exception in the delivery
-report. Include the blocked action, research already done, recommendation and
-only the alternatives the human must choose between. Continue independent work.
-In manual mode, present a consolidated review; an explicit rejection calls
-`spec_reject` and returns to the unresolved scope. Do not publish a rejected spec.
+## Dead end
 
-The consolidated review may also record a human residual. When the automatic cycles
-of a claim have ended (its attempts, the shared budget or stagnation; never an
-operational stop, a contradicting source or a cycle still reserved),
-the maintainer may accept a spec whose remaining gaps are claims still `verified`
-below the threshold. `SpecClient.research_spec` moves on to the next weak claim
-whose cycles have not ended, so a spec with several residual claims exhausts each
-one before the acceptance. The `spec_review` authorization carries `residual`, a list
-of `claim_id` (`fidelity:<id>` or `coverage:<id>`), `verdict` and `reason`. The host
-decides from the stored rows and the research ledger, not from the list: each claim
-must be a current gap, verified, and out of cycles. It refuses, and stores nothing,
-for a contradicted or unsupported claim, a claim a research source contradicted, a
-structural gap, a duplicate or a delegated origin; only a human origin accepts, so
-`SpecClient.review_delegated` never does. The threshold and the support criterion do
-not change: `gaps` keeps listing the claim, and the spec is `ready` only when an
-acceptance that still holds covers every gap. The host records under
-`residual_acceptance` the exact spec revision, each claim's evaluation, verdict,
-reason and how its cycles ended; the publication intent keeps that record. A new spec
-revision starts with an empty list, and a research cycle that reopens before the
-publication starts ends the acceptance. Once the publication starts it holds.
+A `spec_review_required` with no blocking gap is no dead end: review the exact revision,
+delegated or with the person's approval. When the spec stays in review with a blocking gap
+and no `next_actions` of its gaps is yours (`spec_review_required` lists them), or the
+destination has no spec publication (`destination_adapter_missing`: only the maintainer
+clears it, with an adapter), stop there:
 
-Publication uses only the tracker and credentials already authorized in the
-harness. Reuse the same idempotency key while reconciling an uncertain result.
-Immediately before each tracker mutation, recheck the live global delegation,
-its revision, expiry, project, host and destination with
-`specgate.delegation.review_authority_valid`. A stale or revoked grant retains
-the action. An old review never authorizes a different destination.
-Never create a second artifact or tracker item for the same intent and revision.
+1. Keep the spec unpublished.
+2. Report each blocking gap and what clears it, as `review_exits` in `spec_get` and
+   `error.blocking` in `spec_review_required` name them: a person's residual acceptance (a
+   claim still `verified` below the threshold whose cycles ended, or `accept_wording_residual`
+   as `wording:decision-<slug>`), a new revision (`reformulate`, `split`), the grill of this
+   run (`new_grill_question`) or a new verification (a check with no probabilities).
+3. Offer only the exits inside Specgate: the person's approval with that residual
+   ([the residual acceptance](references/residual-acceptance.md)), or the person's rejection
+   through `spec_reject`, which reopens the grill.
+4. Call `feedback_submit` with `stage=spec` and `outcome=blocked`.
+
+Never say Jev or Specgate is down unless a tool returned a provider or transport error.
+
+## Publication only through Specgate
+
+Only the Specgate client publishes the spec: `SpecClient.publish` (or `specgate flow`)
+reserves the intent with `spec_publication_begin`, creates the item through the authorized
+tracker adapter, applies `ready-for-agent` itself and records it with
+`spec_publication_record`. Never publish, edit or label the spec yourself with `gh`, `glab`,
+a tracker API or CLI, and never offer or recommend that, not even when the person asks for a
+way out. Before each tracker mutation the client rechecks the live delegation
+(`specgate.delegation.review_authority_valid`): a stale or revoked grant retains the action.
+Reuse the idempotency key to reconcile an uncertain result; never create a second item for
+the same intent and revision.
+
+## Feedback
+
+When this flow ends, done or blocked, call `feedback_submit` once with `stage=spec`, the
+`outcome` (`completed` or `blocked`) and an honest review of the tool: what worked, the
+difficulties, the error codes you saw and the tools involved. Never include transcripts,
+secrets, ids or paths of a harness session, or the person's words verbatim. On a host
+without `feedback_submit`, go on without it. A feedback refusal never blocks the flow.
