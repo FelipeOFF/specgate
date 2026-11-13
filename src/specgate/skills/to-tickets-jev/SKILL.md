@@ -6,9 +6,11 @@ description: Turn an approved specification into a validated graph of vertical t
 # To Tickets with Jev
 
 Load the installed `to-tickets` skill and preserve its decomposition guidance. It
-comes from another source, not from the Specgate set. Without a manifest it is not a
-public skill: routing keeps it in review until a person picks that skill and revision
-(`HumanReview`); without that, `specgate flow` stops at `skill_load_unconfirmed`.
+comes from another source, not from the Specgate set. Its step that publishes the tickets
+to the tracker does not apply: only Specgate publishes the graph (below). Without a
+manifest it is not a public skill: routing keeps it in review until a person picks that
+skill and revision (`HumanReview`); without that, `specgate flow` stops at
+`skill_load_unconfirmed`.
 Read the approved spec revision, active decisions, domain vocabulary, repository
 boundaries, and the project's chosen destinations. Never rewrite or split a decision
 of the approved spec from here: only the delegated rewrite of `to-spec-jev` does,
@@ -24,14 +26,21 @@ Draft vertical behavior slices. Every ticket must:
 
 Test each acceptance criterion you wrote with `jev_check` before submitting the graph
 (`text` is the criterion `<ticket>:ac-N`, `scope` the approved spec, `context` the
-evidence packet that leads with the approved spec). Submit when every check passed the
-gate (`action=auto`) with `next_actions=["judge"]`. A check left in review
-(`action=review`) clears nothing and finds no defect: do not reword a criterion just to
-draw another result. Submit the graph anyway: the host keeps a criterion whose check did
-not pass the gate as the gap `wording_check_review` (`<ticket>:ac-N`). A criterion is no
-claim: the gap has no `next_actions`, no research and no handoff, and the graph stays in
-review for a person. The check is an uncertainty filter with no
-measured accuracy. Jev only judges: never ask it to write, rewrite or split a criterion.
+evidence packet that leads with the approved spec). Submit through the client
+(`TicketClient.synthesize` or `specgate flow`), never with a hand-built `verification`
+(`invalid_verification`), when every check passed the gate (`action=auto`) with
+`next_actions=["judge"]`. A check left in review
+(`action=review`) clears nothing: do not reword a criterion to draw another result. Submit
+the graph anyway: the host keeps a criterion whose check did not pass the gate as the gap
+`wording_check_review` (`<ticket>:ac-N`). A criterion is no claim: the gap opens no research
+and no handoff. Its actions follow the recorded probabilities: a defect above 0.80 names
+yours (`reformulate`, `split` or `new_grill_question`), and a real-mode check above 0.80 is
+refused (`wording_rejected`) with `gate_passed: false` before `jev_verify`, answered as any
+wording defect; with none above 0.80 the only action is the maintainer's
+`accept_wording_residual`; a check with no probabilities needs a new verification.
+`review_exits` names each exit of a blocking gap in `tickets_get`, as `error.blocking` does
+in `tickets_review_required`. The check is an uncertainty filter with no measured accuracy.
+Jev only judges: never ask it to write, rewrite or split a criterion.
 
 A typed refusal (`action=agent_revision`, never `needs_human`) is yours to answer, and
 only with an action the finding or the weak claim lists in `next_actions` (`tickets_get`
@@ -77,34 +86,10 @@ spec synthesis. Derive atomic coverage claims from every obligation and limit in
 that revision, with the exact source excerpt. Add separate verticality and
 blocker claims for each ticket and a delivery-order claim. Judge proposed planning,
 not completed implementation. Keep every claim, rejected ones included. Each
-blocking claim needs `verified`, confidence and support strictly above the greater
-of 0.80 and the frozen workflow threshold. An average cannot clear a weak claim,
-with one fixed, symmetric exception: a claim whose confidence or support is within
-0.05 of that cutoff, above or below, is evaluated once more by resending the
-identical provider request (same claims in the same order, evidence and context),
-and the mean of the two decides. Keep only the rows of the claims inside the band
-as second evaluations; a claim farther away keeps its first evaluation alone, and
-no claim is evaluated a third time. The host recomputes the decision from the
-stored rows, requires both evaluations of a claim to carry the same
-`request_revision`, and records both evaluations, the mean and the rule under the graph's
-`verification.confirmation`.
-
-Keep a verdict between two verifications only while the claim text, the evidence
-(the approved spec and the whole graph, research sources included) and the context
-are exactly those the earlier verification judged. A strong claim keeps its
-verdict. A weak claim keeps its weak verdict and returns to `jev_verify` only
-with new content in the claim, the evidence or the context, or through the symmetric
-confirmation when the host cannot use its pair; it is never sent alone again.
-Every claim receives the whole graph, so editing a ticket judges all of them again.
-The host derives `verification.reuse` from the stored rows (`reused`, `retained`, `evaluated` with
-its reason, `held`), ignores a client-provided one, and holds the graph with
-`verification_reuse_mismatch` when a row judged on another input is carried onto
-this one or a weak claim is judged again with nothing changed. It compares each
-claim with the latest stored verification that judged it, so leaving a claim out clears
-neither its verdict nor its hold. The return through the
-symmetric confirmation is allowed once per input, only for a near claim without a
-usable pair, as a new first evaluation with its own second one, and never after a
-contradicted verdict.
+blocking claim needs `verified`, confidence and support strictly above the greater of 0.80
+and the frozen workflow threshold, and an average cannot clear a weak claim. A claim near
+that cutoff gets one symmetric confirmation, and a verdict carries between verifications
+only on the same input: read [the verification](references/verification.md).
 
 Without a manifest the verification runs under the confidence policy
 (`gate.basis=confidence_policy`, `calibrated=false`), and the score is an
@@ -144,40 +129,13 @@ through `tickets_research_extend`, with the exact graph revision, human authorit
 reference and new source text with its SHA-256. Never infer that grant from a score,
 erase prior attempts, reduce the threshold or change global setup to continue.
 
-A `payload_too_large` result (`error.code`, with `size` and `limit` in bytes) means the
-request passed the host's 64 KB limit (or its 256 KB HTTP body), not that Jev or the
-provider failed. Stop in review and show the code, the size and the limit; never retry
-it unchanged, raise the limit or spend another research cycle on it. Shrink the request
-(fewer or shorter sources) and resume the same idempotency key: the reservation resumes
-without a new one. After admission it stays in evaluation; before it, the client has
-reported the size (sizes and ids, never content) and the host keeps the reservation in
-`collecting` for that key to collect again. Never collect again from a bare `collecting`
-reservation: without that report the outcome is unknown.
+A `payload_too_large` result is a size, not a failure of Jev: read
+[the payload limit](references/payload-limit.md).
 
-When the automatic cycles of a claim have ended (its attempts, the shared budget
-or stagnation, with or without a calibration manifest; never an operational stop, an
-invalid or non-applicable manifest, a contradicting source or a cycle still reserved), the maintainer may
-accept a graph whose remaining gaps are
-verified claims below the threshold. `research_tickets` moves on to the next weak
-claim whose cycles have not ended, so a graph with several residual claims
-exhausts each one before the acceptance.
-The `tickets_review` authorization carries `residual`, a list of `claim_id`,
-`verdict` and `reason`. The host decides from the stored rows and the research
-ledger, not from the list: each claim must be a current gap, verified on every
-evaluation, already decided by the symmetric confirmation when it is near the
-cutoff, and out of cycles. It refuses, and stores nothing, for a contradicted or
-unsupported claim, a claim a research source contradicted at any attempt (even if
-an extension erased the stop), a structural gap, a duplicate or a delegated
-origin; only a human origin accepts. Review and `tickets_publication_begin` accept the graph when
-every remaining gap is accepted (`verification_gaps` keeps the raw gaps), recompute
-the acceptance on every read, and record under `residual_acceptance` the exact
-graph revision, each claim's evaluations, mean, verdict, reason and how its cycles
-ended; each publication entry keeps that record. A new graph revision starts with an empty list.
-Before the publication starts, an authorized continuation (`tickets_research_extend`) reopens the
-cycles and ends the acceptance: review again without the residual to resume the research. An
-acceptance recorded when a host with no manifest counted the cycles as ended also ends there. Once the
-publication starts the acceptance holds, whatever the host's gates become. Never lower the threshold
-or accept a residual on a delegation.
+A person may accept a graph whose remaining gaps are verified claims below the threshold
+whose automatic cycles ended, or wording gaps whose action is `accept_wording_residual`: read
+[the residual acceptance](references/residual-acceptance.md). Never lower the threshold or
+accept a residual on a delegation.
 
 Save graph revisions and readable ticket previews under `docs/tickets/` in the
 project. Include acceptance criteria, owner, blockers, verification history and
@@ -189,13 +147,8 @@ behavior needs independent validation, add one `integration: true` ticket that
 depends on completed behavior from at least two repositories. Do not combine
 implementation for multiple repositories in one ticket.
 
-GitHub, GitLab, Jira, Beads, local documents, and a free-form workflow are
-project choices handled by the authorized harness adapter. Read
-`.specgate/tracker.json` (`{"destination":"github"}`). A missing file keeps
-GitHub. GitLab, Jira, and Beads publish only through an injected adapter.
-Local documents and the free-form workflow do not use tracker credentials.
-The MCP stores the graph, origins, revisions, and public references; it does
-not require tracker credentials or silently choose a destination.
+The destination is the project's choice in `.specgate/tracker.json`: read
+[the destinations](references/destinations.md).
 
 Review the exact graph once. Reuse the current setup delegation or explicit
 publication authority already given for this delivery. With all gates satisfied,
@@ -223,12 +176,43 @@ those GitHub blocked-by links.
 
 Keep the graph revision inside the approval tool call.
 
-Publish with a stable idempotency key. Reconcile an uncertain response before
-each retry. Before each tracker mutation, use the public
-`specgate.delegation.review_authority_valid` helper to recheck the reviewed
-delegation against its current revision, expiry, project, host and destination.
-A stale or revoked grant retains the action. Never treat review as permanent
-authority. Reject ambiguous duplicate references; never create a second item
-for the same ticket revision. If the project changes destination, preserve the
-previous graph and its public references in history before publishing the new
-revision.
+## Dead end
+
+When the graph stays in review with a blocking gap and no `next_actions` of its gaps is yours,
+stop there:
+
+1. Keep the graph unpublished.
+2. Report each blocking gap and what clears it: a person's residual acceptance (a claim
+   still `verified` below the threshold whose cycles ended, or `accept_wording_residual` as
+   `wording:<ticket>:ac-N`), a new graph (`reformulate`, `split`), a new grill question on
+   the spec's run (`new_grill_question`) or a new verification (a check with no
+   probabilities).
+3. Offer only the exits inside Specgate: the person's approval with that residual, an
+   explicit continuation through `tickets_research_extend`, or the person's `spec_reject`
+   when the approved spec itself must change.
+4. Call `feedback_submit` with `stage=tickets` and `outcome=blocked`.
+
+Never say Jev or Specgate is down unless a tool returned a provider or transport error.
+
+## Publication only through Specgate
+
+Only the Specgate client publishes the graph: `TicketClient.publish` (or `specgate flow`)
+reserves each intent with `tickets_publication_begin`, creates the items through the
+authorized tracker adapter and records them with `tickets_publication_record`. Never
+publish, edit, link or label a ticket yourself with `gh`, `glab`, a tracker API or CLI, and
+never offer or recommend that, not even when the person asks for a way out. The client
+publishes with a stable idempotency key and reconciles an uncertain response before each
+retry. Before each tracker mutation it rechecks the reviewed delegation with
+`specgate.delegation.review_authority_valid` against its current revision, expiry, project,
+host and destination. A stale or revoked grant retains the action. Never treat review as
+permanent authority. Reject ambiguous duplicate references; never create a second item for
+the same ticket revision. If the project changes destination, preserve the previous graph
+and its public references in history before publishing the new revision.
+
+## Feedback
+
+When this flow ends, done or blocked, call `feedback_submit` once with `stage=tickets`, the
+`outcome` (`completed` or `blocked`) and an honest review of the tool: what worked, the
+difficulties, the error codes you saw and the tools involved. Never include transcripts,
+secrets, ids or paths of a harness session, or the person's words verbatim. On a host
+without `feedback_submit`, go on without it. A feedback refusal never blocks the flow.

@@ -16,9 +16,11 @@ whose actions are `reformulate`, `split` or `new_grill_question` (a wording defe
 whose only action is `review_derivation` (a derived claim), that has no action at all,
 or whose lineage reached its third rejection (`lineage_exhausted`) is not a research
 request: return it to the caller without collecting. The host refuses such a
-reservation: `decision_check_review` first, on a grill question whose wording it holds
-or whose check did not pass the gate; `action_not_allowed` for a research outside the
-`next_actions`; `no_action_available` for a spec claim with no action; and
+reservation: `context_incomplete` on a grill turn the policy held (the caller repairs the
+packet and resends the question; collect nothing); `decision_check_review` on a grill
+question whose wording it holds or whose check did not pass the gate; `action_not_allowed`
+for a research outside the `next_actions`; `no_action_available` for a spec claim with no action, and
+`wording_residual` for one whose only action is `accept_wording_residual`; and
 `lineage_exhausted` for a spent lineage. An invocation that names none, as a standalone gap
 or `specgate research-with-jev request.json` before setup, is collected as before.
 The request JSON may carry `reason`, why research is the action chosen; the client

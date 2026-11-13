@@ -15,6 +15,19 @@ evidências identificadas, alternativas e lacunas. Registre origem e revisão qu
 disponíveis; separe fatos observados de inferências. Ao retomar, confira alterações
 nas fontes antes de reutilizar um julgamento.
 
+Resolva cada lacuna antes de enviar a pergunta que depende dela: investigue com as
+ferramentas do projeto e, quando só a pessoa souber o fato, pergunte-o antes, numa pergunta
+própria. Declare a lacuna, o conflito ou o item não examinado que restar, sem escondê-lo
+para chegar ao modelo. O item declarado tira o Jev da avaliação: o resultado sai com
+`origin=policy`, sem chamar o provider (no grill, `context_incomplete`), e o grill não
+conclui. Enquanto esse turno espera, nenhuma outra pergunta abre (`pending_review`).
+Investigue e reenvie a mesma pergunta com o pacote corrigido (no grill, pelo
+`grill_continue`: uma reavaliação sem custo, sem ciclo de pesquisa). Não pesquise o turno
+barrado nem o responda pelo `grill_answer`, que deixa a lacuna no resumo. Se só a pessoa
+souber o fato, peça-o a ela e traga-o como evidência nova nesse reenvio. O reenvio é a
+primeira avaliação real e substitui qualquer resposta dada ao turno barrado: se a pessoa já
+respondeu, confirme com ela o resultado.
+
 Política aprovada para o plugin: busque evidências para resolver as lacunas por
 até três rodadas. Se uma rodada não trouxer informação nova, ou se a lacuna
 persistir após a terceira, encaminhe para revisão humana com a pergunta concreta,

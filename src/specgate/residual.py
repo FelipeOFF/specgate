@@ -6,26 +6,43 @@ says which stored rows and which research question a claim has; this module hold
 the rest: the contract of the list, the refusals, how the cycles of a question end
 in the research ledger, and the all-or-none loop over the list. The host decides
 from the rows it stored and from its ledger, never from what the list carries.
+
+The same list accepts the wording of a text the agent wrote whose check stayed outside the
+gate with no defect above the cutoff (`wording:<target>`, ADR 0036). The host decides it from
+the check it stored for the text and the scope it derives itself: the gap is current, the
+check is in review and kept the five probabilities, and none of them is above the cutoff.
 """
 
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from specgate import lineage_budget
+from specgate.claim_wording import REVIEW, judge, present, review_probabilities
 from specgate.grill_contracts import GrillError
 from specgate.research_ledger import counted, exhausted, stop
 from specgate.shared.domain.inputs import checked_text
 
 
 class ResidualClaim(BaseModel):
-    """A claim the maintainer accepts below the threshold, with its verdict and reason."""
+    """A claim the maintainer accepts below the threshold, with its verdict and reason.
+
+    A claim of the evidence is `fidelity:<id>`, `coverage:<id>` or a claim of the graph, with
+    the verdict the host stored. The wording of a text is `wording:<target>`, with the verdict
+    `review`: its check stayed outside the gate, and the person accepts it as it was written.
+    """
 
     model_config = ConfigDict(extra="forbid", strict=True)
     claim_id: str = Field(min_length=1, max_length=200)
-    verdict: Literal["verified", "unsupported", "contradicted"]
+    verdict: Literal["verified", "unsupported", "contradicted", "review"]
     reason: str = Field(min_length=1, max_length=2000)
+
+
+# The residual of the wording of a text, and the verdict it is listed under.
+WORDING = "wording:"
+WORDING_VERDICT = "review"
 
 
 # A persistent decision gap ends the automatic cycles; an operational stop or a
@@ -40,6 +57,7 @@ ENDED = frozenset(
         "stagnation",
         lineage_budget.EXHAUSTED,
         lineage_budget.DERIVATION_REVIEW,
+        lineage_budget.WORDING_RESIDUAL,
     }
 )
 # An artifact whose publication started has no cycle left to run. The value keeps the
@@ -56,6 +74,14 @@ REFUSALS = {
     "residual_not_verified": "Só uma claim verified em todas as avaliações pode ser aceita.",
     "residual_verdict_mismatch": "O verdict informado difere do gravado na verificação.",
     "residual_cycles_open": "Os ciclos automáticos da claim ainda não se esgotaram.",
+    "residual_wording_defect": (
+        "A checagem de formulação tem defeito acima de 0,80: o agente reformula ou divide o "
+        "texto, e o resíduo não o aceita."
+    ),
+    "residual_wording_unscored": (
+        "A checagem de formulação não guardou as cinco probabilidades: só uma nova "
+        "verificação resolve o texto."
+    ),
 }
 
 
@@ -75,6 +101,7 @@ def handoff_route(code: str | None, delegated: bool) -> str:
         lineage_budget.NO_ACTION,
         lineage_budget.EXHAUSTED,
         lineage_budget.DERIVATION_REVIEW,
+        lineage_budget.WORDING_RESIDUAL,
     }:
         return "human_review"
     return "bounded_adjudication" if code in ENDED else "delivery_exception"
@@ -126,7 +153,8 @@ def next_cycle(
     with `research` among them is researched, and the others are skipped, because the cycle
     would be refused as an action outside the set. When nothing is left to research, a claim
     with no action at all is a person's (`no_action_available`), one whose only action is the
-    maintainer's review of its derivation is the maintainer's (`derivation_review`), and one whose actions are the
+    maintainer's is the maintainer's (`derivation_review` for the review of its derivation,
+    `wording_residual` for the acceptance of its wording), and one whose actions are the
     agent's own (`agent_action`) goes back to the agent. None means every claim may be
     researched.
     """
@@ -139,9 +167,9 @@ def next_cycle(
             actions = None if allowed is None else allowed.get(claim_id, [])
             if actions is None or lineage_budget.RESEARCH in actions:
                 return claim_id, None
-            if actions and set(actions) <= lineage_budget.MAINTAINER_ACTIONS:
-                # A diagnosed derivation is the maintainer's to review, not the agent's.
-                unattended = unattended or (claim_id, lineage_budget.DERIVATION_REVIEW)
+            if lineage_budget.maintainer_only(actions):
+                # A diagnosed derivation or a wording outside the gate is the maintainer's.
+                unattended = unattended or (claim_id, lineage_budget.maintainer_end(actions))
             elif actions:
                 waiting = waiting or (claim_id, AGENT_ACTION)
             else:
@@ -187,7 +215,7 @@ def cycles(
     *,
     publication_started: bool,
     own: str = "",
-    reviewed: bool = False,
+    reviewed: bool | str = False,
 ) -> dict[str, Any] | None:
     """How the automatic research cycles of a question ended; None while one remains.
 
@@ -195,9 +223,10 @@ def cycles(
     open. Once the publication started no cycle runs, so a question the ledger
     never ended counts as ended by the publication. `own` is the prefix of the
     questions of the artifact; the default owns every question, so any reserved
-    cycle keeps them open. A claim `reviewed` has the maintainer's review of its
-    derivation as its only action, so the research never opens a cycle for it and
-    the review is where its cycles end.
+    cycle keeps them open. A claim `reviewed` has an action of the maintainer as its
+    only one, so the research never opens a cycle for it and the review is where its
+    cycles end: `reviewed` names that end (`maintainer_end`), and True is the review of
+    its derivation.
     """
     if reserved(state, own, publication_started=publication_started):
         return None
@@ -205,7 +234,7 @@ def cycles(
     if reason is None and publication_started:
         reason = PUBLICATION_STARTED
     if reason is None and reviewed:
-        reason = lineage_budget.DERIVATION_REVIEW
+        reason = reviewed if isinstance(reviewed, str) else lineage_budget.DERIVATION_REVIEW
     if reason not in {*ENDED, PUBLICATION_STARTED}:
         return None
     return {
@@ -238,7 +267,7 @@ def settled(
     *,
     publication_started: bool,
     own: str = "",
-    reviewed: bool = False,
+    reviewed: bool | str = False,
 ) -> dict[str, Any]:
     """The end of the cycles of a claim the research did not contradict, or the refusal."""
     if contradicted_by_research(state, question):
@@ -255,6 +284,59 @@ def settled(
     if ended is None:
         raise refused("residual_cycles_open")
     return ended
+
+
+@dataclass(frozen=True)
+class Wordings:
+    """The texts the agent wrote, as the host derives them, with the record of their checks.
+
+    `texts` maps each target (`decision-<id>`, `<ticket>:ac-N`) to its text, and `scope` is
+    what the check judged them against. The host builds both from the draft and the grill or
+    the approved spec it holds, never from the claims the client sent.
+    """
+
+    record: Any
+    texts: Mapping[str, str]
+    scope: str
+
+
+def wording_claim(
+    entry: dict[str, Any],
+    wordings: Wordings | None,
+    refuse: Callable[[str], GrillError] = refused,
+) -> dict[str, Any]:
+    """One accepted wording residual, or the refusal that keeps it out.
+
+    The gap is current: the target is a text of this revision and its check, for this text and
+    scope, stayed outside the gate. It kept the five probabilities (`residual_wording_unscored`
+    otherwise, as an error or the transport leave it), none above the cutoff
+    (`residual_wording_defect` otherwise: the agent rewrites the text), and the list names it
+    under the verdict `review`.
+    """
+    target = entry["claim_id"].removeprefix(WORDING)
+    text = wordings.texts.get(target) if wordings else None
+    if (
+        wordings is None
+        or text is None
+        or judge(wordings.record, target, text, wordings.scope)[0] != "review"
+    ):
+        raise refuse("residual_not_a_gap")
+    probabilities = review_probabilities(wordings.record, target, text, wordings.scope)
+    if probabilities is None:
+        raise refuse("residual_wording_unscored")
+    if present(probabilities):
+        raise refuse("residual_wording_defect")
+    if entry["verdict"] != WORDING_VERDICT:
+        raise refuse("residual_verdict_mismatch")
+    reason = wordings.record["checks"][target].get("reason")
+    return {
+        "id": entry["claim_id"],
+        "target": target,
+        "verdict": WORDING_VERDICT,
+        "reason": entry["reason"],
+        "probabilities": probabilities,
+        **({"check_reason": reason} if isinstance(reason, str) else {}),
+    }
 
 
 def accepted(
@@ -284,7 +366,42 @@ def accepted(
     return claims
 
 
+def lists_wording(authorization: Mapping[str, Any] | None) -> bool:
+    """Whether the residual of an approval lists the wording of a text."""
+    return any(
+        isinstance(entry, dict) and str(entry.get("claim_id", "")).startswith(WORDING)
+        for entry in (authorization or {}).get("residual") or ()
+    )
+
+
+def accepted_wordings(record: Mapping[str, Any] | None) -> frozenset[str]:
+    """The targets whose wording an acceptance that holds covers."""
+    return frozenset(
+        claim["target"]
+        for claim in (record or {}).get("claims", [])
+        if str(claim.get("id", "")).startswith(WORDING)
+    )
+
+
+def gap_of(claim_id: str) -> str:
+    """The gap a residual claim covers: its own, or the wording gap of the text it names."""
+    if claim_id.startswith(WORDING):
+        return f"Jev: {REVIEW}:{claim_id.removeprefix(WORDING)}"
+    return f"Jev: {claim_id}"
+
+
 def remaining(gaps: list[str], record: dict[str, Any] | None) -> list[str]:
     """The gaps no accepted claim covers."""
-    covered = {f"Jev: {claim['id']}" for claim in (record or {}).get("claims", [])}
+    covered = {gap_of(claim["id"]) for claim in (record or {}).get("claims", [])}
     return [gap for gap in gaps if gap not in covered]
+
+
+def with_exits(refusal: dict[str, Any], exits: Any) -> dict[str, Any]:
+    """A review refusal with what the host derived on the read (`review_exits`): the gaps that
+    block the artifact, each with who can lift it, and the message that says so."""
+    if not isinstance(exits, dict) or not isinstance(exits.get("blocking"), list):
+        return refusal
+    error = {**refusal["error"], "blocking": exits["blocking"]}
+    if isinstance(exits.get("message"), str):
+        error["message"] = exits["message"]
+    return {**refusal, "error": error}

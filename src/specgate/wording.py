@@ -5,12 +5,13 @@ forma: a formulação defeituosa, a divisão ou reformulação que acrescenta ou
 e a identidade ou a linhagem de decisão que não se sustenta, inclusive a reparação que troca
 o id da decisão pesquisada. A reescrita delegada de uma spec aprovada ganha a que passa do
 que a operação cobre. A ação fora do conjunto permitido, a ação que o agente não registrou e o
-reenvio de um conteúdo já rejeitado têm a mesma forma.
+reenvio de um conteúdo já rejeitado têm a mesma forma, como o pacote de contexto que a política
+barrou antes do Jev (ADR 0037): o agente o repara e reenvia a mesma pergunta.
 """
 
 from typing import Any
 
-from specgate.grill_contracts import GrillError
+from specgate.grill_contracts import CONTEXT_INCOMPLETE, GrillError
 
 WORDING_REJECTED = "wording_rejected"
 EQUIVALENCE_REJECTED = "equivalence_rejected"
@@ -21,7 +22,8 @@ ACTION_NOT_ALLOWED = "action_not_allowed"
 ACTION_NOT_REGISTERED = "action_not_registered"
 IDENTICAL_RESUBMISSION = "identical_resubmission"
 REWRITE_OUT_OF_SCOPE = "rewrite_out_of_scope"
-# Every code whose result is the agent's to revise, never a person's to decide.
+# Every code whose refused text the composed flow hands back to the harness to revise. An
+# AgentRefusal can name no text and stay out (verification_refs.InvalidVerification).
 AGENT_CODES = frozenset(
     {
         WORDING_REJECTED,
@@ -33,6 +35,7 @@ AGENT_CODES = frozenset(
         ACTION_NOT_REGISTERED,
         IDENTICAL_RESUBMISSION,
         REWRITE_OUT_OF_SCOPE,
+        CONTEXT_INCOMPLETE,
     }
 )
 AGENT_REVISION = "agent_revision"
@@ -87,6 +90,24 @@ class RewriteOutOfScope(AgentRefusal):
 
     def __init__(self, findings: list[dict[str, Any]]) -> None:
         super().__init__(REWRITE_OUT_OF_SCOPE, REWRITE_MESSAGE, findings)
+
+
+CONTEXT_INCOMPLETE_MESSAGE = (
+    "O Jev não avaliou a pergunta: o pacote de contexto declara lacuna, conflito ou item não "
+    "examinado, ou falha outra checagem de prontidão, e a política barra a avaliação antes de "
+    "chamar o provider. Não é indisponibilidade do Jev, e pesquisa não se aplica. Investigue com "
+    "as ferramentas do projeto, repare o pacote e reenvie a mesma pergunta pelo grill_continue, "
+    "sem ciclo de pesquisa; o turno barrado não conta entre as quatro avaliações, e o mesmo pacote "
+    "reenviado é recusado sem gravar nada. Só o pacote reparado tira a lacuna do resumo: uma "
+    "resposta humana à pendência decide a escolha, não o contexto."
+)
+
+
+class ContextIncomplete(AgentRefusal):
+    """A packet the policy held before the Jev was called; the agent repairs it."""
+
+    def __init__(self, findings: list[dict[str, Any]]) -> None:
+        super().__init__(CONTEXT_INCOMPLETE, CONTEXT_INCOMPLETE_MESSAGE, findings)
 
 
 def typed_refusal(

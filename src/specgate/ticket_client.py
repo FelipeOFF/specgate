@@ -37,7 +37,7 @@ from specgate.research_ledger import (
     resumable,
 )
 from specgate.research_restore import restore_refs
-from specgate.residual import AGENT_ACTION, handoff_route
+from specgate.residual import AGENT_ACTION, handoff_route, with_exits
 from specgate.spec_contracts import IssueReference
 from specgate.ticket_claims import (
     confirmation_rows,
@@ -956,14 +956,17 @@ class TicketClient(GrillClient):
         ):
             return _review(state, "destination_adapter_missing")
         graph = state.get("tickets")
-        if not graph or graph["status"] not in {"ready", "publishing", "published", "publication_review"}:
-            return _review(state, "tickets_review_required")
-        # The raw gaps stay on record; the ones the maintainer accepted do not block.
-        if remaining(
-            graph.get("verification_gaps", ["verification_missing"]),
-            graph.get("residual_acceptance"),
+        if (
+            not graph
+            or graph["status"] not in {"ready", "publishing", "published", "publication_review"}
+            # The raw gaps stay on record; the ones the maintainer accepted do not block.
+            or remaining(
+                graph.get("verification_gaps", ["verification_missing"]),
+                graph.get("residual_acceptance"),
+            )
         ):
-            return _review(state, "tickets_review_required")
+            exits = (graph or {}).get("review_exits")
+            return with_exits(_review(state, "tickets_review_required"), exits)
         from specgate.delegation import review_authority_valid
 
         def authorized(repository: str) -> bool:

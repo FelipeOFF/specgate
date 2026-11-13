@@ -9,7 +9,13 @@ from mcp.shared.dispatcher import ProgressFnT
 
 from specgate.context import ContextPacket
 from specgate.delegation import load_delegation
-from specgate.grill_contracts import GrillQuestion, HumanAnswer
+from specgate.grill_contracts import (
+    CONTEXT_INCOMPLETE,
+    GrillQuestion,
+    HumanAnswer,
+    context_findings,
+    unresearchable,
+)
 from specgate.lineage_budget import EXHAUSTED
 from specgate.payload import CODE, PayloadTooLarge
 from specgate.research import (
@@ -26,6 +32,7 @@ from specgate.research_filter import (
 )
 from specgate.research_ledger import counted, exhausted, resumable, stop
 from specgate.transport import MCPTransportError, call_tool
+from specgate.wording import ContextIncomplete
 from specgate.workflow_policy import WorkflowPolicy, resolve_workflow_policy
 
 
@@ -268,8 +275,16 @@ class GrillClient:
         idempotency_key: str,
         authorize_jev: bool,
     ) -> tuple[dict[str, Any], bool]:
-        """Reserve the cycle; the flag says whether this caller owns the external work."""
+        """Reserve the cycle; the flag says whether this caller owns the external work.
+
+        A packet the policy held before the Jev was called comes back as the host refuses it, the
+        agent's to repair and send again by `continue_run`, never a stop for a person: no grant
+        and no claim repair a packet, so this refusal comes first.
+        """
         question_id = active["question"]["id"]
+        unjudged = unresearchable(active["evaluation"])
+        if unjudged == CONTEXT_INCOMPLETE:
+            return {**state, **ContextIncomplete(context_findings(active)).refusal()}, False
         diagnostic = (
             "authorization_required"
             if not authorize_jev
@@ -278,9 +293,8 @@ class GrillClient:
             else "human_decision_required"
             if active["question"]["requires_authorization"]
             or active["question"]["missing_personal_fact"]
-            else "evaluation_unavailable"
-            if active["evaluation"].get("origin") != "jev"
-            or active["evaluation"].get("action") == "error"
+            else unjudged
+            if unjudged
             else "decision_check_review"
             if (active.get("wording") or {}).get("review")
             else "decision_equivalence_review"
