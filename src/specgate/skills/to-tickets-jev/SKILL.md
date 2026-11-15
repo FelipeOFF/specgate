@@ -37,7 +37,8 @@ and no handoff. Its actions follow the recorded probabilities: a defect above 0.
 yours (`reformulate`, `split` or `new_grill_question`), and a real-mode check above 0.80 is
 refused (`wording_rejected`) with `gate_passed: false` before `jev_verify`, answered as any
 wording defect; with none above 0.80 the only action is the maintainer's
-`accept_wording_residual`; a check with no probabilities needs a new verification.
+`accept_wording_residual`; a check with no probabilities needs a new verification
+(`new_verification`), which `TicketClient.recheck_wording` makes at no cost.
 `review_exits` names each exit of a blocking gap in `tickets_get`, as `error.blocking` does
 in `tickets_review_required`. The check is an uncertainty filter with no measured accuracy.
 Jev only judges: never ask it to write, rewrite or split a criterion.
@@ -186,7 +187,8 @@ stop there:
    still `verified` below the threshold whose cycles ended, or `accept_wording_residual` as
    `wording:<ticket>:ac-N`), a new graph (`reformulate`, `split`), a new grill question on
    the spec's run (`new_grill_question`) or a new verification (a check with no
-   probabilities).
+   probabilities), which `TicketClient.recheck_wording` makes: run it first, and stop
+   only on `wording_check_unscored`.
 3. Offer only the exits inside Specgate: the person's approval with that residual, an
    explicit continuation through `tickets_research_extend`, or the person's `spec_reject`
    when the approved spec itself must change.

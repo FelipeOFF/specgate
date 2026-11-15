@@ -12,7 +12,11 @@ from pydantic import ValidationError
 from specgate import lineage_budget
 from specgate.beads_tracker import BeadsSpecTracker
 from specgate.claim_equivalence import check_equivalence
-from specgate.claim_wording import check_derivation, check_wording
+from specgate.claim_wording import (
+    check_derivation,
+    check_wording,
+    recheck_unavailable,
+)
 from specgate.client import MIXED, confirmed_result, gate_authority
 from specgate.context import (
     ContextPacket,
@@ -67,7 +71,7 @@ from specgate.spec_rewrite import (
     rewrite_groups,
 )
 from specgate.tracker import GitHubTracker, Tracker, TrackerError
-from specgate.verification_refs import context_digest, digest, source_refs
+from specgate.verification_refs import SPEC_KEYS, context_digest, digest, source_refs
 from specgate.wording import AGENT_CODES, AgentRefusal
 
 # The coverage evidence holds the rendered spec; the context only points to it.
@@ -515,19 +519,7 @@ class SpecClient(GrillClient):
             return None
         added = added or []
         rendered = draft.render()
-        held = [*context["evidence"], *added]
-        contexts = {
-            "fidelity": {
-                **context,
-                "rules": _once(context["rules"], held),
-                "evidence": held,
-            },
-            "coverage": {
-                **context,
-                "rules": _once(context["rules"], context["evidence"]),
-                "artifact": SPEC_ARTIFACT,
-            },
-        }
+        contexts = self._contexts(context, added)
         evidence = {
             "fidelity": self._fidelity_evidence(state, summary["decisions"], context),
             "coverage": rendered,
@@ -652,6 +644,85 @@ class SpecClient(GrillClient):
                 }
             verification["claims"][kind] = [claim.model_dump() for claim in claims]
         return verification
+
+    @staticmethod
+    def _contexts(
+        context: dict[str, Any], added: list[dict[str, Any]]
+    ) -> dict[str, dict[str, Any]]:
+        """The context of the fidelity, with the sources a research cycle admitted (`added`),
+        and the one of the coverage, which points to the rendered spec."""
+        held = [*context["evidence"], *added]
+        return {
+            "fidelity": {
+                **context,
+                "rules": _once(context["rules"], held),
+                "evidence": held,
+            },
+            "coverage": {
+                **context,
+                "rules": _once(context["rules"], context["evidence"]),
+                "artifact": SPEC_ARTIFACT,
+            },
+        }
+
+    async def recheck_wording(self, run_id: str, *, idempotency_key: str) -> dict[str, Any]:
+        """Score again the decisions whose wording check kept no score, from the stored spec.
+
+        The renota of ADR 0040: the draft, its evidence and its contexts as stored, every check
+        with a score and every verdict of the fidelity and of the coverage reused as they are, no
+        `jev_verify`, and only the checks with no score (an error, the transport) asked again. It
+        goes through `spec_submit`, and the host takes it as no new evaluation: no rejection, no
+        research, also after the third rejection. A new score with a defect above the cutoff is
+        stored all the same and comes back as `wording_rejected`, or as the person's after the
+        third rejection. With no check to score, nothing is sent (`wording_recheck_unavailable`).
+        """
+        from specgate.spec_claims import expected_claims, wording_targets
+
+        state = await self.get(run_id)
+        if state.get("error"):
+            return state
+        spec = state.get("spec")
+        if not spec or state.get("research_pending"):
+            return {**state, **recheck_unavailable()}
+        project = self.project or Path.cwd()
+        stored = spec.get("verification") or {}
+        restored = self._restore_research(state, project)
+        contexts = None if restored is None else self._contexts(*restored)
+        if contexts is None or context_digest(contexts["fidelity"]) != stored.get(
+            "context_revisions", {}
+        ).get("fidelity"):
+            return _review(state, "research_changed")
+        summary = await self._call("grill_summary", run_id=run_id)
+        if summary.get("error"):
+            return summary
+        draft = SpecDraft.model_validate(spec["draft"])
+        targets, scope = wording_targets(
+            expected_claims(draft.model_dump(), state["objective"], summary["decisions"])
+        )
+
+        async def send(verification: dict[str, Any]) -> dict[str, Any]:
+            submitted = await self.submit(
+                run_id,
+                state["revision"],
+                idempotency_key=idempotency_key,
+                draft=draft,
+                skill_revision=spec["skill_revision"],
+                vocabulary_revision=spec["vocabulary_revision"],
+                research_refs=spec.get("research_refs", []),
+                verification=verification,
+            )
+            return self.save_spec(submitted, project)
+
+        return await self._rescore(
+            state,
+            stored,
+            SPEC_KEYS,
+            lineage_budget.SPEC,
+            targets,
+            scope,
+            contexts["fidelity"],
+            send,
+        )
 
     @staticmethod
     def save_spec(state: dict[str, Any], project: Path) -> dict[str, Any]:

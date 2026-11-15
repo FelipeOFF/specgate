@@ -32,6 +32,9 @@ holds, the claim takes the actions of its evidence. The host refuses, and stores
 wording gap with a probability above 0.80 (`residual_wording_defect`: reformulate or split
 the decision instead) and a check that kept no probabilities, such as an error or the mock
 (`residual_wording_unscored`): only a new verification resolves it, through the client.
+`SpecClient.recheck_wording` makes it from the stored spec: it asks again only the checks with
+no probabilities, reuses every verdict and every other check, and the host counts no
+rejection for it, even after the third.
 Only a human origin accepts it, as with the claims.
 
 The host keeps a decision whose check did not pass the gate as the gap `wording_check_review`.

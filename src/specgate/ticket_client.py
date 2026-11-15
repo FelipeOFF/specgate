@@ -10,7 +10,11 @@ from typing import Any
 
 from specgate.beads_tickets import BeadsTicketTracker
 from specgate.claim_equivalence import check_equivalence
-from specgate.claim_wording import check_derivation, check_wording
+from specgate.claim_wording import (
+    check_derivation,
+    check_wording,
+    recheck_unavailable,
+)
 from specgate.client import confirmed_result
 from specgate.context import (
     ContextPacket,
@@ -23,7 +27,11 @@ from specgate.destination import DestinationError, ProjectTracker, resolve_desti
 from specgate.grill_client import GrillClient
 from specgate.grill_contracts import GrillError
 from specgate.jira_tickets import JiraTicketTracker
-from specgate.lineage_budget import not_researchable, research_action
+from specgate.lineage_budget import (
+    TICKETS,
+    not_researchable,
+    research_action,
+)
 from specgate.payload import PayloadTooLarge
 from specgate.research import (
     ResearchRequest,
@@ -69,7 +77,7 @@ from specgate.ticket_reuse import (
     reentry,
 )
 from specgate.tracker import GitHubTracker, TicketTracker, TrackerError
-from specgate.verification_refs import context_digest, digest, source_refs
+from specgate.verification_refs import GRAPH_KEYS, context_digest, digest, source_refs
 from specgate.wording import AGENT_CODES, AgentRefusal
 
 VERIFY_BATCH_SIZE = 20
@@ -311,38 +319,7 @@ class TicketClient(GrillClient):
         refs = source_refs(sources)
         # Spec, graph and refs only; each research text travels once, in the context.
         evidence = planning_evidence(state["spec"], draft.model_dump(), refs)
-        original = state.get("context", {})
-        context = asdict(
-            ContextPacket(
-                objective=state["objective"],
-                rules=tuple(original.get("rules", [])),
-                artifact=GRAPH_ARTIFACT,
-                # The spec leads the context: without it Jev's confidence fell (#124).
-                evidence=(
-                    Evidence(
-                        "approved-spec",
-                        "approved-spec",
-                        sha256(state["spec"]["body"].encode()).hexdigest(),
-                        state["spec"]["body"],
-                    ),
-                    *(
-                        Evidence(
-                            item["id"], item["source"], item["revision"], item["text"]
-                        )
-                        for item in sources
-                    ),
-                ),
-                alternatives=(
-                    "repair_with_evidence",
-                    "review_graph",
-                    "keep_unpublished",
-                ),
-                gaps=(*original.get("gaps", []), *draft.gaps),
-                conflicts=tuple(original.get("conflicts", [])),
-                unexamined=tuple(original.get("unexamined", [])),
-            )
-        )
-        context = json.loads(json.dumps(context))
+        context = self._plan_context(state, draft, sources)
         prior = state.get("tickets", {}).get("verification", {})
         # A criterion the agent divided or reformulated is checked against the original it
         # replaces before anything else: a part that adds or loses content refuses the graph
@@ -470,6 +447,90 @@ class TicketClient(GrillClient):
             "evidence_revision": evidence_revision,
             "context_revision": context_revision,
         }
+
+    @staticmethod
+    def _plan_context(
+        state: dict[str, Any], draft: TicketPlan, sources: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        """The context every check and evaluation of a graph is sent: the approved spec first,
+        then each research text once."""
+        original = state.get("context", {})
+        context = asdict(
+            ContextPacket(
+                objective=state["objective"],
+                rules=tuple(original.get("rules", [])),
+                artifact=GRAPH_ARTIFACT,
+                # The spec leads the context: without it Jev's confidence fell (#124).
+                evidence=(
+                    Evidence(
+                        "approved-spec",
+                        "approved-spec",
+                        sha256(state["spec"]["body"].encode()).hexdigest(),
+                        state["spec"]["body"],
+                    ),
+                    *(
+                        Evidence(
+                            item["id"], item["source"], item["revision"], item["text"]
+                        )
+                        for item in sources
+                    ),
+                ),
+                alternatives=(
+                    "repair_with_evidence",
+                    "review_graph",
+                    "keep_unpublished",
+                ),
+                gaps=(*original.get("gaps", []), *draft.gaps),
+                conflicts=tuple(original.get("conflicts", [])),
+                unexamined=tuple(original.get("unexamined", [])),
+            )
+        )
+        loaded: dict[str, Any] = json.loads(json.dumps(context))
+        return loaded
+
+    async def recheck_wording(self, run_id: str, *, idempotency_key: str) -> dict[str, Any]:
+        """Score again the criteria whose wording check kept no score, from the stored graph.
+
+        The renota of ADR 0040: the graph, its evidence and its context as stored, every check
+        with a score and every verdict reused as they are, no `jev_verify`, and only the checks
+        with no score (an error, the transport) asked again. It goes through `tickets_submit`,
+        and the host takes it as no new evaluation: no rejection, no research, also after the
+        third rejection. A new score with a defect above the cutoff is stored all the same and
+        comes back as `wording_rejected`, or as the person's after the third rejection. With no
+        check to score, nothing is sent (`wording_recheck_unavailable`).
+        """
+        state = await self.get(run_id)
+        if state.get("error"):
+            return state
+        graph = state.get("tickets")
+        if not graph or state.get("research_pending"):
+            return {**state, **recheck_unavailable()}
+        project = self.project or Path.cwd()
+        sources = self._restore_research(state, project)
+        stored = graph.get("verification") or {}
+        draft = TicketPlan.model_validate(graph["draft"])
+        context = (
+            None if sources is None else self._plan_context(state, draft, sources)
+        )
+        if context is None or context_digest(context) != stored.get("context_revision"):
+            return _review(state, "research_changed")
+        targets, scope = wording_targets(state["spec"]["body"], draft.model_dump())
+
+        async def send(verification: dict[str, Any]) -> dict[str, Any]:
+            submitted = await self.submit(
+                run_id,
+                state["revision"],
+                idempotency_key=idempotency_key,
+                draft=draft,
+                skill_revision=graph["skill_revision"],
+                vocabulary_revision=graph["vocabulary_revision"],
+                verification=verification,
+            )
+            return self.save_graph(submitted, project)
+
+        return await self._rescore(
+            state, stored, GRAPH_KEYS, TICKETS, targets, scope, context, send
+        )
 
     @staticmethod
     def save_graph(state: dict[str, Any], project: Path) -> dict[str, Any]:

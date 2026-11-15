@@ -1,12 +1,18 @@
 """Public harness API for a grill; retries keep the original idempotency key."""
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
 from mcp.shared.dispatcher import ProgressFnT
 
+from specgate.claim_wording import (
+    Target,
+    recheck_unavailable,
+    rescore_wording,
+    still_unscored,
+)
 from specgate.context import ContextPacket
 from specgate.delegation import load_delegation
 from specgate.grill_contracts import (
@@ -16,7 +22,7 @@ from specgate.grill_contracts import (
     context_findings,
     unresearchable,
 )
-from specgate.lineage_budget import EXHAUSTED
+from specgate.lineage_budget import EXHAUSTED, rescored_refusal
 from specgate.payload import CODE, PayloadTooLarge
 from specgate.research import (
     ResearchRequest,
@@ -547,3 +553,38 @@ class GrillClient:
 
     async def summary(self, run_id: str) -> dict[str, Any]:
         return await self._call("grill_summary", run_id=run_id)
+
+    async def _rescore(
+        self,
+        state: dict[str, Any],
+        stored: Mapping[str, Any],
+        keys: Collection[str],
+        artifact: str,
+        targets: Sequence[Target],
+        scope: str,
+        context: Mapping[str, Any],
+        send: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]],
+    ) -> dict[str, Any]:
+        """The renota of ADR 0040 from the stored verification, the same for the spec and the graph.
+
+        Only the checks the stored record kept with no score are asked again. With nothing to
+        score, or with no new score, nothing is sent. Otherwise `send` submits the stored rows
+        (`keys`) with the new record and saves the answer, and a defect the new score found comes
+        back as the refusal of the counter of `artifact`.
+        """
+        try:
+            rescore = await rescore_wording(
+                self._call, targets, scope, context, stored.get("wording")
+            )
+        except PayloadTooLarge as overflow:
+            return overflow.review(state)
+        if rescore is None:
+            return {**state, **recheck_unavailable()}
+        if not rescore.scored:
+            return {**state, **still_unscored(rescore)}
+        verification = {key: stored[key] for key in keys if key in stored}
+        verification["wording"] = rescore.record
+        saved = await send(verification)
+        if not rescore.findings or saved.get("error"):
+            return saved
+        return {**saved, **rescored_refusal(saved, artifact, rescore.findings)}
