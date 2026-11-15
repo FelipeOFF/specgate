@@ -39,12 +39,18 @@ record keeps the whole entry only of what the host reads, a defect or a check th
 not pass (`derived`). The claims that passed clean are one digest of their requests, with the
 authorities that judged them (`clean`): the next verification reuses them when the set of
 requests it would send is the same, and asks again when any of them changed.
+
+A check whose transport failed never reached an answer, so the client sends the identical
+request again, up to a fixed number of attempts (ADR 0040). A check that still kept no score
+is scored again from the stored record (`rescore_wording`): every check with a score stays as
+it was, and the host takes the same content with only those checks scored as no new
+evaluation (`rescored`).
 """
 
 import asyncio
 import json
 import math
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -77,6 +83,36 @@ ACCEPT_WORDING_RESIDUAL = "accept_wording_residual"
 # The fields of the wording record that hold the claims the host derived.
 DERIVED = "derived"
 CLEAN = "clean"
+# How many times in all a `jev_check` whose transport failed is sent (ADR 0040). No answer
+# reached the client, so the identical request draws no second score it could compare.
+TRANSPORT_ATTEMPTS = 3
+# The codes `GrillClient._call` gives a call whose transport failed: the connection, the total
+# deadline and the handshake, which a dropped connection fails too ("Connection closed", ADR
+# 0036). An interruption is the harness stopping, and an answer of the host, of the provider or
+# of the mock is never sent again.
+TRANSPORT_CODES = frozenset({"connection", "timeout", "protocol_incompatible"})
+# The renota found every check it asked again still without a score: nothing is stored.
+UNSCORED = "wording_check_unscored"
+UNSCORED_MESSAGE = (
+    "A checagem de formulação continua sem nota depois das tentativas, e nada foi gravado. Repita "
+    "a renota quando o erro de cada achado passar: ela não conta rejeição nem gasta pesquisa."
+)
+# No check lost its score to the transport this time: the host answered with none (the mock, an
+# error of the host or of the provider), and the same request brings the same answer back.
+UNSCORED_ANSWERED_MESSAGE = (
+    "A checagem de formulação continua sem nota, e nada foi gravado: o host respondeu sem nota (o "
+    "mock, ou um erro do host ou do provider), não de uma falha de transporte. Repetir a renota "
+    "traz a mesma resposta enquanto essa causa durar, e a decisão de como a entrega segue é da "
+    "pessoa."
+)
+# The renota has nothing stored to start from, nothing in it to score, or a research cycle holds
+# the artifact: nothing is sent.
+RECHECK_UNAVAILABLE = "wording_recheck_unavailable"
+RECHECK_UNAVAILABLE_MESSAGE = (
+    "A renota parte da revisão gravada e só dá nota a uma checagem que ficou sem nota: não há "
+    "revisão para dar nota, nenhuma checagem dela ficou sem nota, ou uma pesquisa está pendente. "
+    "Nada foi enviado. Conclua a pesquisa ou siga pelo fluxo de sempre."
+)
 
 
 @dataclass(frozen=True)
@@ -85,15 +121,17 @@ class Kind:
 
     The wording check and the equivalence check store the same record: the authority that
     judged, the request and the probabilities of the defects, in the order of the tool.
+    `attempts` is how many times in all a call whose transport failed is sent.
     """
 
     tool: str
     defects: Mapping[str, str]
     actions: Callable[[list[str]], list[str]]
     error: str
+    attempts: int = 1
 
 
-WORDING = Kind(TOOL, DEFECTS, next_actions, ERROR)
+WORDING = Kind(TOOL, DEFECTS, next_actions, ERROR, TRANSPORT_ATTEMPTS)
 
 State = Literal["clear", "defective", "review", "missing"]
 Support = Literal["supported", "unsupported", "contradicted"]
@@ -252,6 +290,16 @@ def review_defects(wording: Any, target: str, text: str, scope: str) -> list[str
     return None if probabilities is None else present(probabilities)
 
 
+def unscored(wording: Any, target: str, text: str, scope: str) -> bool:
+    """Whether the check of this text and scope ran and kept no score: it stayed outside the gate
+    with no valid probabilities (an error, the transport, the mock). It is the one check the
+    renota may score (ADR 0040)."""
+    return (
+        judge(wording, target, text, scope)[0] == "review"
+        and review_probabilities(wording, target, text, scope) is None
+    )
+
+
 def wording_gaps(wording: Any, targets: Sequence[Target], scope: str) -> list[str]:
     """One gap per text that has no clean check that passed the gate."""
     gaps = []
@@ -353,16 +401,31 @@ def _finding(
     }
 
 
+def transport_failed(result: Mapping[str, Any]) -> bool:
+    """Whether a call never reached an answer: `GrillClient._call` marks the failure of its
+    transport for reconciliation, with one of the codes of the transport."""
+    error = result.get("error")
+    return (
+        result.get("reconcile") is True
+        and isinstance(error, dict)
+        and error.get("code") in TRANSPORT_CODES
+    )
+
+
 async def run_check(
     call: Call, arguments: dict[str, Any], kind: Kind = WORDING
 ) -> dict[str, Any]:
-    """One request, one call. An error is a result that stays in review, not a crash."""
-    try:
-        result = await call(kind.tool, **arguments)
-    except PayloadTooLarge:
-        raise
-    except ValueError as error:
-        return {"error": {"code": kind.error, "message": str(error)}}
+    """One request, sent again while its transport fails, up to the attempts of its kind. Any
+    answer ends it, and an error is a result that stays in review, not a crash."""
+    for _ in range(kind.attempts):
+        try:
+            result = await call(kind.tool, **arguments)
+        except PayloadTooLarge:
+            raise
+        except ValueError as error:
+            return {"error": {"code": kind.error, "message": str(error)}}
+        if not transport_failed(result):
+            break
     if overflow := PayloadTooLarge.from_result(result):
         raise overflow
     if result.get("error"):
@@ -468,6 +531,33 @@ async def _run(
     return results
 
 
+Entry = tuple[dict[str, Any], dict[str, str] | None]
+
+
+async def _ask(
+    call: Call,
+    record: dict[str, Any],
+    targets: Sequence[Target],
+    arguments: dict[str, dict[str, Any]],
+    revisions: Mapping[str, str],
+    kept: Mapping[str, Entry],
+) -> None:
+    """Check each text of `targets` but the ones `kept`, an identical request once, and store in
+    `record`, in the order of `targets`, the entry of each one and the authority it names."""
+    pending: dict[str, str] = {}
+    for target, _ in targets:
+        if target not in kept:
+            pending.setdefault(revisions[target], target)
+    results = await _run(call, list(pending.items()), arguments)
+    for target, text in targets:
+        entry, authority = kept.get(target) or stored_entry(
+            results[revisions[target]], {"text_revision": digest(text)}
+        )
+        record["checks"][target] = entry
+        if authority is not None:
+            record["authorities"][entry["authority"]] = authority
+
+
 async def check_wording(
     call: Call,
     targets: Sequence[Target],
@@ -485,8 +575,7 @@ async def check_wording(
     """
     arguments, revisions, wording = _requests(targets, scope, context)
     before: Any = prior if isinstance(prior, dict) else {}
-    kept: dict[str, dict[str, Any]] = {}
-    pending: dict[str, str] = {}
+    kept: dict[str, Entry] = {}
     for target, text in targets:
         if judge(before, target, text, scope)[0] == "clear":
             entry = before["checks"][target]
@@ -494,20 +583,16 @@ async def check_wording(
                 entry.get("request_revision") == revisions[target]
                 and before.get("context_revision") == wording["context_revision"]
             ):
-                kept[target] = entry
-                continue
-        pending.setdefault(revisions[target], target)
-    results = await _run(call, list(pending.items()), arguments)
-    for target, text in targets:
-        if target in kept:
-            entry, authority = kept[target], before["authorities"][kept[target]["authority"]]
-        else:
-            entry, authority = stored_entry(
-                results[revisions[target]], {"text_revision": digest(text)}
-            )
-        wording["checks"][target] = entry
-        if authority is not None:
-            wording["authorities"][entry["authority"]] = authority
+                kept[target] = entry, before["authorities"][entry["authority"]]
+    await _ask(call, wording, targets, arguments, revisions, kept)
+    if findings := _findings(wording, targets, scope):
+        raise WordingRejected(findings)
+    return wording
+
+
+def _findings(wording: Any, targets: Sequence[Target], scope: str) -> list[dict[str, Any]]:
+    """The finding of each text the record refuses: a defect that passed the gate, or a defect
+    above the cutoff that a real check outside it kept."""
     findings = []
     for position, (target, text) in enumerate(targets, 1):
         state, defects = judge(wording, target, text, scope)
@@ -522,9 +607,157 @@ async def check_wording(
                     passed=state == "defective",
                 )
             )
-    if findings:
-        raise WordingRejected(findings)
-    return wording
+    return findings
+
+
+@dataclass(frozen=True)
+class Rescore:
+    """What the renota of a stored record made (ADR 0040).
+
+    `record` is the stored record with the checks that had no score asked again, `lost` those
+    targets, `findings` what `check_wording` would refuse the record with, and `unscored` each
+    target asked again that still has no score, with why.
+    """
+
+    record: dict[str, Any]
+    lost: list[str]
+    findings: list[dict[str, Any]]
+    unscored: list[dict[str, Any]]
+
+    @property
+    def scored(self) -> bool:
+        """Whether some check that had no score has one now."""
+        return len(self.unscored) < len(self.lost)
+
+
+async def rescore_wording(
+    call: Call,
+    targets: Sequence[Target],
+    scope: str,
+    context: Mapping[str, Any],
+    prior: Any,
+) -> Rescore | None:
+    """Ask again only the checks a stored record kept without a score; None when it has none.
+
+    The texts, the scope and the context are the ones the record was made of (a record of other
+    ones is None too). Every check with a score, the clean ones, the defects and the ones outside
+    the gate with their probabilities, is kept as it was, and so are the checks of the claims the
+    host derived: the host takes nothing else as the renota. The record is returned whatever the
+    new scores found, so the caller stores them (`Rescore.findings` holds the refusal). Raises
+    `PayloadTooLarge` when the host reports the request above the limit.
+    """
+    arguments, revisions, shell = _requests(targets, scope, context)
+    if (
+        not isinstance(prior, dict)
+        or not isinstance(prior.get("checks"), dict)
+        or not isinstance(prior.get("authorities"), dict)
+        or any(prior.get(key) != shell[key] for key in ("scope_revision", "context_revision"))
+    ):
+        return None
+    asked = [(target, text) for target, text in targets if unscored(prior, target, text, scope)]
+    if not asked:
+        return None
+    record: dict[str, Any] = json.loads(json.dumps(prior))
+    await _ask(call, record, asked, arguments, revisions, {})
+    still = [
+        {"target": target, "reason": record["checks"][target].get("reason")}
+        for target, text in asked
+        if unscored(record, target, text, scope)
+    ]
+    lost = [target for target, _ in asked]
+    return Rescore(record, lost, _findings(record, targets, scope), still)
+
+
+def _held(code: str, message: str, findings: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "action": "needs_human",
+        "auto_advance": False,
+        "error": {"code": code, "message": message, "findings": findings},
+    }
+
+
+def still_unscored(rescore: Rescore) -> dict[str, Any]:
+    """The answer of a renota whose every check came back with no score: nothing is sent.
+
+    Only a check whose transport failed may be scored by a later renota; one the host answered
+    with no score (the mock, an error) is not asked to be repeated.
+    """
+    lost = any(item["reason"] in TRANSPORT_CODES for item in rescore.unscored)
+    message = UNSCORED_MESSAGE if lost else UNSCORED_ANSWERED_MESSAGE
+    return _held(UNSCORED, message, rescore.unscored)
+
+
+def recheck_unavailable() -> dict[str, Any]:
+    """The answer of a renota with nothing to score: no stored revision to start from, no check of
+    it left without a score, or a research pending. Nothing is sent."""
+    return _held(RECHECK_UNAVAILABLE, RECHECK_UNAVAILABLE_MESSAGE, [])
+
+
+def rescored(
+    before: Any, after: Any, targets: Sequence[Target], scope: str
+) -> list[str]:
+    """The texts a resubmission scored again, or none when it changed anything else (ADR 0040).
+
+    `before` is the stored record of the same content and `after` the one sent now, both as the
+    host stores them. Only a check that ran and kept no score (`unscored`) may change, and it
+    counts only when it now reads as a check with a score under the rules of any check: one that
+    passed the gate and holds for this client's policy and recipe, or one outside the gate with
+    its five probabilities. A check that changed into one that does not hold is no score. Every
+    other check stays identical, with its request, its authority and its probabilities, and so
+    do the scope, the context, the authorities already named and the checks of the claims the
+    host derived. A new authority is one a check scored now names and nothing else does: a check
+    left as it was reads as it was, never again under an authority its record did not hold.
+    """
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return []
+    old, new = before.get("checks"), after.get("checks")
+    old_judges, new_judges = before.get("authorities"), after.get("authorities")
+    if (
+        not isinstance(old, dict)
+        or not isinstance(new, dict)
+        or set(old) != set(new)
+        or not isinstance(old_judges, dict)
+        or not isinstance(new_judges, dict)
+        or any(new_judges.get(key) != value for key, value in old_judges.items())
+        or any(
+            before.get(key) != after.get(key)
+            for key in ("scope_revision", "context_revision", DERIVED, CLEAN)
+        )
+    ):
+        return []
+    texts = dict(targets)
+    scored: list[str] = []
+    for target, entry in new.items():
+        if entry == old[target]:
+            continue
+        text = texts.get(target)
+        if text is None or not unscored(before, target, text, scope):
+            return []
+        if unscored(after, target, text, scope):
+            # Still without a score, as the transport may fail again: nothing to count.
+            continue
+        if judge(after, target, text, scope)[0] == "missing":
+            return []
+        scored.append(target)
+    named = {new[target].get("authority") for target in scored}
+    added = set(new_judges) - set(old_judges)
+    if any(key not in named for key in added) or added & _cited(after, scored):
+        return []
+    return scored
+
+
+def _cited(record: Mapping[str, Any], scored: Collection[str]) -> set[str]:
+    """The authorities a record names outside the checks in `scored`: every other check, the
+    checks of the claims the host derived and the claims that passed clean."""
+    entries = [entry for target, entry in record["checks"].items() if target not in scored]
+    derived = record.get(DERIVED)
+    if isinstance(derived, dict):
+        entries.extend(derived.values())
+    keys = [entry.get("authority") for entry in entries if isinstance(entry, dict)]
+    clean = record.get(CLEAN)
+    if isinstance(clean, dict) and isinstance(clean.get("authorities"), list):
+        keys.extend(clean["authorities"])
+    return {key for key in keys if isinstance(key, str)}
 
 
 def requests_digest(requests: Iterable[str]) -> str:

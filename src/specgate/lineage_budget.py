@@ -26,6 +26,10 @@ of those was reset by changing it.
   refused (`identical_resubmission`) without counting. The same content judged again on purpose
   (the symmetric confirmation of the graph) is part of the evaluation it completes: once a claim,
   and never after the third rejection.
+- The same content sent again with only the wording checks that kept no score scored now (the
+  renota, ADR 0040) is no new evaluation either: it completes the last one, as the score its
+  transport lost would have. It counts no rejection, needs no registration and goes through the
+  third rejection too; the caller decides it is one (`claim_wording.rescored`).
 
 Before a new evaluation of an artifact whose last evaluation left weak claims, the agent registers
 what it chose to do (`LineageAction`): a claim that was weak, an action inside the set the code
@@ -53,6 +57,7 @@ from specgate.wording import (
     ACTION_NOT_REGISTERED,
     IDENTICAL_RESUBMISSION,
     AgentRefusal,
+    WordingRejected,
 )
 
 STATE_KEY = "lineage_budget"
@@ -251,6 +256,16 @@ def held(state: Mapping[str, Any], artifact: str, claim: str) -> bool:
     return not released(state, artifact) or claim in _accepted(state, artifact)
 
 
+def hold(
+    state: Mapping[str, Any], artifact: str, actions: Mapping[str, list[str]]
+) -> tuple[dict[str, list[str]], set[str]]:
+    """What the agent may do with each weak claim, from what the code allows (`actions`), and the
+    claims whose actions the counter took: the ones a person holds (`held`). The maintainer's
+    review is no action of the agent, so the counter never takes it."""
+    taken = {claim for claim in pending(actions) if held(state, artifact, claim)}
+    return {claim: [] if claim in taken else found for claim, found in actions.items()}, taken
+
+
 def exhausted(state: Mapping[str, Any], artifact: str) -> bool:
     """Whether a weak claim of the last evaluation reached its limit and no person acted since."""
     record = _record(state, artifact)
@@ -355,6 +370,21 @@ def refuse_identical(artifact: str, digest: str) -> AgentRefusal:
     )
 
 
+def rescored_refusal(
+    state: Mapping[str, Any], artifact: str, findings: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """What the agent gets once the host stored a renota that found a defect (ADR 0040): the
+    wording refusal, whose rewrite is the agent's, while the counter lets a revision of the agent
+    through; after the third rejection the text is the person's, as every weak claim is."""
+    if exhausted(state, artifact):
+        return {
+            "action": "needs_human",
+            "auto_advance": False,
+            "error": {"code": EXHAUSTED, "message": EXHAUSTED_MESSAGE, "findings": findings},
+        }
+    return WordingRejected(findings).refusal()
+
+
 # --- What the agent registers -----------------------------------------------------------------
 
 
@@ -416,6 +446,7 @@ def evaluate(
     on_purpose: Collection[str] = (),
     adjudicated: str | None = None,
     derive: Callable[[str], Mapping[str, Sequence[str]] | None] | None = None,
+    recheck: bool = False,
 ) -> None:
     """Refuse a new revision the budget of the artifact does not let through, then record it.
 
@@ -436,6 +467,10 @@ def evaluate(
     derives from it now. The registration answers to them as well as to the sets the record kept,
     so a record written before the code changed the actions of a cause still takes the action the
     read offers (ADR 0036).
+    `recheck` says the revision is the renota of the last evaluation (ADR 0040): the content the
+    record evaluated last, with only wording checks that kept no score scored now. It completes
+    that evaluation: the weak claims it leaves are kept, with the ones a person holds, and nothing
+    is refused or counted, after the third rejection too. Any other content is read as ever.
 
     Every check is made against the last evaluation the record holds, never against a revision
     the Jev did not judge in between. Raises the refusal, and nothing is recorded: any revision
@@ -447,6 +482,14 @@ def evaluate(
     if acted:
         reset(state, artifact)
     record = _record(state, artifact)
+    if recheck and record is not None and content == record.get("last"):
+        if weak is None:
+            record["revision"] = state.get("revision", 0)
+            return
+        # The score the transport lost, given to the evaluation that counted already.
+        spent = [claim for claim in counted(record.get("weak", {})) if _spent(record, claim)]
+        _settle(record, state, content, weak, None, spent)
+        return
     if record is None or record.get("last") is None:
         # The first evaluation opens the record and makes no rejection.
         if weak is not None:

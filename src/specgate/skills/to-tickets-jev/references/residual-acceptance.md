@@ -34,4 +34,6 @@ the acceptance keeps the probabilities the check recorded, and once it holds the
 leaves `next_actions`. The host refuses, and stores nothing, a wording gap with a probability
 above 0.80 (`residual_wording_defect`: reformulate or split the criterion instead) and a
 check with no probabilities, such as a transport error (`residual_wording_unscored`: verify
-the graph again through the client). Only a human origin accepts it, as with the claims.
+the graph again through the client). `TicketClient.recheck_wording` makes that verification from
+the stored graph: it asks again only the checks with no probabilities, reuses every verdict and
+every other check, and the host counts no rejection for it, even after the third. Only a human origin accepts it, as with the claims.
