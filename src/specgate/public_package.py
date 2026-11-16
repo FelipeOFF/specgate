@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import re
@@ -109,6 +110,36 @@ def _commit_from_direct_url(raw: str) -> str:
     if not isinstance(commit, str) or _COMMIT.fullmatch(commit) is None:
         raise ValueError("Installed package commit is unavailable.")
     return commit
+
+
+def describe_version(name: str, version: str, direct_url: str | None) -> str:
+    """The line `specgate --version` prints: package, version and the git commit it came from.
+
+    The version in pyproject does not change between exports, so the commit pipx recorded
+    is what tells one install from another.
+    """
+    label = f"{name} {version}"
+    try:
+        commit = _commit_from_direct_url(direct_url or "")
+    except ValueError:
+        return label
+    return f"{label} (commit {commit[:7]})"
+
+
+def client_version(package: str = PUBLIC_PACKAGE) -> str:
+    """Describe the client that is running, read from its own installed metadata."""
+    names = importlib.metadata.packages_distributions().get("specgate", [])
+    for name in dict.fromkeys((package, *names)):
+        try:
+            distribution = importlib.metadata.distribution(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        return describe_version(
+            distribution.metadata["Name"],
+            distribution.version,
+            distribution.read_text("direct_url.json"),
+        )
+    return "specgate (versão desconhecida)"
 
 
 def _commit_from_ls_remote(stdout: str) -> str:

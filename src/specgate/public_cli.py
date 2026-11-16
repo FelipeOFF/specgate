@@ -21,7 +21,11 @@ from specgate.product import (
     mcp_api_key,
     packaged_skills,
 )
-from specgate.public_package import PackageProbes, refresh_public_package
+from specgate.public_package import (
+    PackageProbes,
+    client_version,
+    refresh_public_package,
+)
 from specgate.public_setup import (
     HarnessName,
     detect_public_harnesses,
@@ -412,9 +416,8 @@ async def _smoke(project: Path, host: str, token: str) -> dict[str, Any]:
     project = project.resolve()
     skills = _bundled_skills().resolve()
     query = (
-        "Resolve specification questions from authorized project evidence through "
-        "the Specgate MCP, escalating only business choices, authorizations, "
-        "and persistent gaps."
+        "Grill the scope with the person through grill-with-docs, then record each "
+        "decision the person made in the Specgate host so the spec can cite it."
     )
     request = ReviewRequest(
         objective="Route the requirements clarification skill with authorized evidence.",
@@ -478,6 +481,25 @@ async def _smoke(project: Path, host: str, token: str) -> dict[str, Any]:
     }
 
 
+class _VersionAction(argparse.Action):
+    """Print the running client's version only when asked, so no other command reads it."""
+
+    def __init__(self, option_strings: Sequence[str], dest: str, **kwargs: Any) -> None:
+        super().__init__(
+            option_strings, dest, nargs=0, default=argparse.SUPPRESS, **kwargs
+        )
+
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: str | Sequence[Any] | None,
+        option_string: str | None = None,
+    ) -> None:
+        print(client_version())
+        parser.exit()
+
+
 def _add_json_flag(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--json",
@@ -494,6 +516,11 @@ def main(
     probes: PackageProbes | None = None,
 ) -> None:
     parser = argparse.ArgumentParser(description="Instalador público Specgate")
+    parser.add_argument(
+        "--version",
+        action=_VersionAction,
+        help="Mostra a versão e o commit do cliente instalado",
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     flow.configure(commands.add_parser("flow"))
     research.configure(commands.add_parser("research-with-jev"))
