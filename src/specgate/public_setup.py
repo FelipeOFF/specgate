@@ -65,6 +65,7 @@ _WORKFLOW_SKILLS = (
     "implement-spec-jev",
     "verify-spec-jev",
     "iterate-with-jev",
+    "deliver-with-jev",
 )
 _WORKFLOW_MARKER = PUBLIC_MARKER
 _TOKEN_ENV = TOKEN_ENV

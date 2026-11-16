@@ -3,7 +3,7 @@
     ".github/workflows/ci.yml": "32b28f2e92a7d415a1687d4cadf540c84adfff4b8910be6388920eae662e7c3a",
     ".github/workflows/release.yml": "b0b998ab6881f9c173e880624a984a8cedc00402db6e4ccea3415725b8fa69c9",
     "LICENSE": "4c38401ce1ce9aee51321b14df43ce9c7827beae38522fd87b79d1bec2753114",
-    "README.md": "1b8785e5e7b9394ef9454506c3f64de82aee300d8ad65fcacecee8a2276634c3",
+    "README.md": "0060f44994dae48179d7469a278e8adfc3040111ac4cc465129466f0b28e3476",
     "docs/specgate-cover.jpg": "1d1237e72bc63eb64e2b86707c520ebb6062cb4bd99e19313ffddc872a5b5635",
     "licenses/mcp-python-sdk-MIT.txt": "5e13dbbc1d120fc2a03cecde7c91424ae2d7de11b63d58ded2f4431e261ee50d",
     "pyproject.toml": "6297d4010acdff27a14569aff68830774f2bfdb4be848c3b739735050ee9bb8d",
@@ -50,7 +50,7 @@
     "src/specgate/public_cli.py": "6a72f1b8b6351a09b2002c139690f4ad9ea8927a5d53b389d0a9e7ec0a28f794",
     "src/specgate/public_gate_revision.py": "4d0e36bb0530fb5eeabb7dfc53d01ae5d49a3ec35ea434bc9047bc07b1f25bcb",
     "src/specgate/public_package.py": "d63bf235eba2595dac0c17436dbf7364bdc1be7ac172bf8b0493c2639d750e92",
-    "src/specgate/public_setup.py": "20c344408c805cdcc971178625109379f0a62ca3016fa19cc9f9ae9b6b914b76",
+    "src/specgate/public_setup.py": "f7b2c47ec360da6635b764ead1800ce9afb4900eabbf178e5482c3d2954d6e8d",
     "src/specgate/recipe_inputs.py": "f0829750fb9da2a0348ecb2b643418bcb7d7faef2e43ab8fc528d72db2dd086b",
     "src/specgate/research.py": "11af42d37eeb382a65be710de82eaff8bb6a62b3499b7abfb8bfc31d6b6a4b61",
     "src/specgate/research_filter.py": "0fd793cdbfcbac4007c00e2dec56186b244cfb9bbe5675b87a707b3c074d51f6",
@@ -63,6 +63,7 @@
     "src/specgate/shared/domain/decisions.py": "0acf9947d84ccb2b0f5f3951b105be4cb299952ad896ce25272b293fb8acf015",
     "src/specgate/shared/domain/inputs.py": "a9dc8bc6e7e68154852dd5bfafcf5d71a604a4ff290b5bca60e1a7544a334f4b",
     "src/specgate/shared/ports/jev.py": "b08205ff2f6a04bcc99b472d7ffbe325c70f62246c0926a58a5a279e1e994884",
+    "src/specgate/skills/deliver-with-jev/SKILL.md": "69dd5b4017cdbd554bb7777084c8c24264d32391ee99af38ad356eaaa764c23a",
     "src/specgate/skills/grill-with-jev/SKILL.md": "5bcc79b766fdda6115d5da1fa7f758f4a698faa679e234f10b6a346a4d4a1b1f",
     "src/specgate/skills/grill-with-jev/references/lineage.md": "ed61152f6adff707ae3833a5b26e98bc7051787c0495d60619b7288fe6835de0",
     "src/specgate/skills/grill-with-jev/references/research-cycle.md": "e557827d32d4620e5489b5cf9308d35932b1d9c9de719c107075b58d83aa4d43",
@@ -117,7 +118,7 @@
   "provenance": {
     "generator": "scripts/export_public_release.py",
     "source_repository": "FelipeOFF/specgate-server-mcp",
-    "source_revision": "2994a99c2b61d5a2365e5ebd0b6a019eb3f45a7c"
+    "source_revision": "a820b18d7848bc0880efd821ac01df4e82e0478a"
   },
   "schema": 1,
   "version": "0.1.0"
