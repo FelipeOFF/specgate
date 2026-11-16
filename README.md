@@ -42,7 +42,7 @@ A coding agent can write a spec, open tickets and implement a slice without ever
 This package installs skills and an MCP client into the agents you already use. The harness keeps writing. [Jev](https://docs.typesafe.ai/concepts/system-one), TypeSafe's decision model, answers a typed question about the evidence you authorized: a choice, a claim, a screen, a ranking. The MCP call stays attached to the turn. There is no daemon, no callback later, no merge from a model.
 
 - One install for every harness it finds. `--harness` selects; `--yes` takes all of them.
-- Skills ship in English and run the same flow everywhere: `triage-jev` → `grill-with-jev` (with `research-with-jev` and `research-filter-jev` for a gap) → `to-spec-jev` → `to-tickets-jev` → `implement-spec-jev` → `verify-spec-jev`. `iterate-with-jev` sits beside that flow: a `/iterate` comment is judged before the pull request branch moves.
+- Skills ship in English and run the same flow everywhere: `triage-jev` → `grill-with-jev` (with `research-with-jev` and `research-filter-jev` for a gap) → `to-spec-jev` → `to-tickets-jev` → `implement-spec-jev` → `verify-spec-jev`. `deliver-with-jev` runs `grill-with-jev`, `to-spec-jev`, `to-tickets-jev` and `implement-spec-jev` in one invocation, resuming from the state the host keeps. `iterate-with-jev` sits beside that flow: a `/iterate` comment is judged before the pull request branch moves.
 - Your MCP host, your API key. Model keys stay on the server. This package never logs the credential.
 - If the MCP is down, the harness still runs. The decision stays in human review. One warning per session.
 
@@ -96,6 +96,7 @@ Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `D
 | `implement-spec-jev` | Walk the unblocked frontier in a worktree. |
 | `verify-spec-jev` | Last gate: every acceptance criterion against worktree evidence, before a draft PR. |
 | `iterate-with-jev` | Judge a `/iterate` comment with `jev_verify` before any push. Does not merge. |
+| `deliver-with-jev` | Take one delivery from the grill to draft PRs in one invocation: it runs the four phase skills in order, picks the phase from the host's state, continues the same grill run and stops only where a phase skill stops. Never merges, never runs `specgate setup` and never passes `--authorize-drafts`. |
 
 `verify-spec-jev` does not close issues, merge pull requests or publish packages. Those stay human. `iterate-with-jev` does not merge either.
 
@@ -128,7 +129,7 @@ python3 -m venv .venv
 | Path | What |
 | --- | --- |
 | `src/specgate/` | Public Python client and harness adapters |
-| `src/specgate/skills/` | `triage-jev`, `grill-with-jev`, `research-with-jev`, `research-filter-jev`, `to-spec-jev`, `to-tickets-jev`, `implement-spec-jev`, `verify-spec-jev`, `iterate-with-jev` |
+| `src/specgate/skills/` | `triage-jev`, `grill-with-jev`, `research-with-jev`, `research-filter-jev`, `to-spec-jev`, `to-tickets-jev`, `implement-spec-jev`, `verify-spec-jev`, `iterate-with-jev`, `deliver-with-jev` |
 | `scripts/verify_release.py` | Version lock and SHA-256 of the exported tree |
 
 ## Privacy and safety
