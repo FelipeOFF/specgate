@@ -11,22 +11,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from specgate.public_setup import update_public_harnesses
-
 PUBLIC_PACKAGE = "specgate-client"
 PUBLIC_REPOSITORY = "https://github.com/FelipeOFF/specgate.git"
 _COMMIT = re.compile(r"^[0-9a-f]{40}$")
 _READ_ERROR = "Could not read the installed commit or the public master."
 _REINSTALL_ERROR = "Public package reinstall failed."
-_SKILLS_ERROR = "Installed package skills are unavailable."
+_REAPPLY_ERROR = "The installed package could not apply the harnesses."
+# Both scripts run with `-P`: the update runs from the person's project, and a module there
+# (a `secrets.py`, say) would take the place of the standard library one.
 _QUERY = (
-    "import importlib.metadata, pathlib, sys\n"
-    "package, mode = sys.argv[1], sys.argv[2]\n"
-    "dist = importlib.metadata.distribution(package)\n"
-    "if mode == 'commit':\n"
-    "    print(dist.read_text('direct_url.json') or '', end='')\n"
-    "else:\n"
-    "    print(pathlib.Path(dist.locate_file('specgate/skills')))\n"
+    "import importlib.metadata, sys\n"
+    "dist = importlib.metadata.distribution(sys.argv[1])\n"
+    "print(dist.read_text('direct_url.json') or '', end='')\n"
+)
+# Applies the saved harnesses with the code and the skills of the package it runs in.
+# Every client already installed runs its own copy against a newer package, so
+# `specgate.product.packaged_skills()` and
+# `specgate.public_setup.update_public_harnesses(source, home=, codex_command=)`
+# are a contract with those clients: they keep these names and this call.
+_REAPPLY = (
+    "import json, pathlib, sys\n"
+    "from specgate.product import packaged_skills\n"
+    "from specgate.public_setup import update_public_harnesses\n"
+    "home = pathlib.Path(sys.argv[1]) if sys.argv[1] else None\n"
+    "command = tuple(json.loads(sys.argv[2]))\n"
+    "report = update_public_harnesses(packaged_skills(), home=home, codex_command=command)\n"
+    "print(json.dumps(report, ensure_ascii=False))\n"
 )
 
 
@@ -46,7 +56,8 @@ class PackageProbes:
     read_installed: Callable[[], str]
     read_remote: Callable[[], str]
     reinstall: Callable[[], None]
-    skills_root: Callable[[], Path]
+    # Applies the harnesses with the installed package, in a process of its own.
+    reapply: Callable[[Path | None, tuple[str, ...]], dict[str, Any]]
 
 
 def _spawn(
@@ -81,8 +92,8 @@ def _pipx_python(package: str) -> Path | None:
     return None
 
 
-def _query(python: Path, package: str, mode: str, spawn: Spawn) -> str:
-    completed = spawn([str(python), "-c", _QUERY, package, mode], capture=True)
+def _query(python: Path, package: str, spawn: Spawn) -> str:
+    completed = spawn([str(python), "-P", "-c", _QUERY, package], capture=True)
     if completed.returncode != 0 or not isinstance(completed.stdout, str):
         raise ValueError("Installed package metadata is unavailable.")
     return completed.stdout
@@ -119,7 +130,7 @@ def installed_package_commit(
     python = _pipx_python(package)
     if python is None:
         raise ValueError("Installed package commit is unavailable.")
-    return _commit_from_direct_url(_query(python, package, "commit", spawn))
+    return _commit_from_direct_url(_query(python, package, spawn))
 
 
 def remote_master_commit(
@@ -147,17 +158,42 @@ def reinstall_public_package(
         raise ValueError("Public package reinstall failed.")
 
 
-def installed_skill_root(
-    package: str = PUBLIC_PACKAGE, *, spawn: Spawn = _spawn
-) -> Path:
-    """Return the on-disk skill root of the installed public client."""
+def reapply_public_package(
+    home: Path | None,
+    codex_command: tuple[str, ...],
+    package: str = PUBLIC_PACKAGE,
+    *,
+    spawn: Spawn = _spawn,
+) -> dict[str, Any]:
+    """Apply the saved harnesses with the installed package, in its own interpreter.
+
+    This process runs the code it started with, which a reinstall does not replace: applied
+    from here, a skill or a hook a new package brings would only arrive on the next update.
+    """
     python = _pipx_python(package)
     if python is None:
-        raise ValueError("Installed skills are unavailable.")
-    skills = Path(_query(python, package, "skills", spawn).strip())
-    if not (skills / "specgate" / "SKILL.md").is_file():
-        raise ValueError("Installed skills are unavailable.")
-    return skills
+        raise ValueError(_REAPPLY_ERROR)
+    completed = spawn(
+        [str(python), "-P", "-c", _REAPPLY, str(home or ""), json.dumps(list(codex_command))],
+        capture=True,
+    )
+    report = _report(completed)
+    if report is None:
+        reason = (completed.stderr or "").strip().splitlines()[-1:]
+        raise ValueError(" ".join([_REAPPLY_ERROR, *reason]))
+    return report
+
+
+def _report(completed: subprocess.CompletedProcess[str]) -> dict[str, Any] | None:
+    """The JSON report the last line of a successful run printed, if any."""
+    lines = (completed.stdout or "").strip().splitlines()
+    if completed.returncode != 0 or not lines:
+        return None
+    try:
+        report = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+    return report if isinstance(report, dict) else None
 
 
 def live_probes() -> PackageProbes:
@@ -166,7 +202,7 @@ def live_probes() -> PackageProbes:
         read_installed=installed_package_commit,
         read_remote=remote_master_commit,
         reinstall=reinstall_public_package,
-        skills_root=installed_skill_root,
+        reapply=reapply_public_package,
     )
 
 
@@ -188,34 +224,23 @@ def _reinstall(probes: PackageProbes) -> None:
         raise ValueError(_REINSTALL_ERROR) from error
 
 
-def _skills(probes: PackageProbes) -> Path:
-    try:
-        source = probes.skills_root()
-    except (OSError, ValueError) as error:
-        raise ValueError(_SKILLS_ERROR) from error
-    if not (source / "specgate" / "SKILL.md").is_file():
-        raise ValueError(_SKILLS_ERROR)
-    return source
-
-
 def refresh_public_package(
     *,
     home: Path | None = None,
     codex_command: tuple[str, ...] = ("codex",),
     probes: PackageProbes | None = None,
 ) -> dict[str, Any]:
-    """Reapply saved harnesses, reinstalling only when public master differs."""
+    """Reapply saved harnesses, reinstalling only when public master differs.
+
+    The installed package applies them itself, so the skills and hooks of a new one land in
+    this same update.
+    """
     selected = live_probes() if probes is None else probes
     installed, remote = _read_commits(selected)
     replaced = installed != remote
     if replaced:
         _reinstall(selected)
-    report = dict(
-        update_public_harnesses(
-            _skills(selected),
-            home=home,
-            codex_command=codex_command,
-        )
-    )
+    report = dict(selected.reapply(home, codex_command))
     report["package_replaced"] = replaced
+    report["package"] = {"from": installed, "to": remote}
     return report

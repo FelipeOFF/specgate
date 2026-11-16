@@ -45,9 +45,14 @@ For every selected ticket:
 5. Run `verify-spec-jev` against the ticket's acceptance criteria and the
    worktree evidence. Do not open a draft pull request when a code claim is
    unsupported or contradicted, or when only operational claims remain.
-6. When checks and verification pass and publication is authorized, create one
-   draft pull request containing the ticket reference, `delivery_id`, commit,
-   and stable implementation marker.
+6. When checks and verification pass and publication is authorized, the
+   implementation client (`ImplementationClient.implement`, or `specgate flow`)
+   opens one draft pull request containing the ticket reference, `delivery_id`,
+   commit, and stable implementation marker. It reserves the ticket with
+   `implementation_begin` before the work, records the checks and claims the
+   publication with `implementation_record`, and records the draft it opened
+   with `implementation_record`. Never open the draft yourself with `gh`, `glab`
+   or a forge API outside that record, and never offer or recommend that.
 7. Reconcile an uncertain publication response before retrying. Never create a
    second pull request for the same implementation claim.
 

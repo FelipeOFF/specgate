@@ -32,6 +32,7 @@ from specgate.rewrite_note import BODY_LIMIT, rewrite_note
 from specgate.spec_contracts import IssueReference
 from specgate.spec_rewrite import rewrite_audit
 from specgate.spec_verification import (
+    evidence_limit,
     interpret_verification,
     is_operational_claim,
     pack_evidence,
@@ -496,11 +497,14 @@ class ImplementationClient(TicketClient):
         context: ContextPacket | None = None,
         require_automatic: bool = False,
         record: dict[str, Any] | None = None,
+        base: str | None = None,
     ) -> dict[str, Any] | None:
         """Hold the delivery for review unless the evidence supports every claim.
 
         Without a human authorization the verdict is the whole decision to publish, so it
-        also has to clear the predicate of its authority, bound to this request.
+        also has to clear the predicate of its authority, bound to this request. The
+        evidence is what the ticket changed since `base`, within what the claims and the
+        context leave of the host's limit.
         """
         claims = ticket_claims(ticket)
         code_claims = [
@@ -514,8 +518,15 @@ class ImplementationClient(TicketClient):
                 "auto_advance": False,
             }
             return reviewed
+        sent = asdict(context) if require_automatic and context else None
         try:
-            evidence = pack_evidence(worktree, check_results, ticket)
+            evidence = pack_evidence(
+                worktree,
+                check_results,
+                ticket,
+                base,
+                limit=evidence_limit(code_claims, sent),
+            )
         except ValueError as error:
             if (overflow := oversize(error)) is None:
                 raise
@@ -523,7 +534,7 @@ class ImplementationClient(TicketClient):
         arguments: dict[str, Any] = {
             "claims": [claim.model_dump() for claim in code_claims],
             "evidence": evidence,
-            **({"context": asdict(context)} if require_automatic and context else {}),
+            **({"context": sent} if sent else {}),
         }
         verification = await self._call("jev_verify", **arguments)
         if overflow := PayloadTooLarge.from_result(verification):
@@ -657,7 +668,12 @@ class ImplementationClient(TicketClient):
             alternatives=["implementar", "revisar ticket"],
         )
         if packet.gaps or packet.conflicts:
-            return _review(state, "implementation_context_incomplete")
+            return _review(
+                state,
+                "implementation_context_incomplete",
+                gaps=list(packet.gaps),
+                conflicts=list(packet.conflicts),
+            )
         if start is not None:
             state = await self._call(
                 "implementation_begin",
@@ -776,6 +792,7 @@ class ImplementationClient(TicketClient):
             context=packet,
             require_automatic=not publication_authorized,
             record=verified,
+            base=pull_request_base,
         )
         if verification is not None:
             return verification

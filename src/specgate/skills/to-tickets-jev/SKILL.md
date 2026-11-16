@@ -38,7 +38,8 @@ yours (`reformulate`, `split` or `new_grill_question`), and a real-mode check ab
 refused (`wording_rejected`) with `gate_passed: false` before `jev_verify`, answered as any
 wording defect; with none above 0.80 the only action is the maintainer's
 `accept_wording_residual`; a check with no probabilities needs a new verification
-(`new_verification`), which `TicketClient.recheck_wording` makes at no cost.
+(`new_verification`), which `TicketClient.recheck_wording` makes (a new `jev_check`, no
+rejection counted).
 `review_exits` names each exit of a blocking gap in `tickets_get`, as `error.blocking` does
 in `tickets_review_required`. The check is an uncertainty filter with no measured accuracy.
 Jev only judges: never ask it to write, rewrite or split a criterion.
@@ -105,7 +106,7 @@ affected planning again. Reserve through `tickets_research_begin`, with
 `lineage_actions` (`research` and the reason), and persist through
 `tickets_research_record`; bind both to the current graph revision. Resume an evaluating
 reservation before starting another collection. The public package ships
-`TicketClient.research_tickets`, which orchestrates this cycle; a harness that calls the
+`TicketClient.research_tickets`, which runs this cycle; a harness that calls the
 MCP tools directly preserves the same journal.
 
 Allow at most three attempts per claim within the shared frozen research budget.
@@ -172,7 +173,7 @@ continue independent tickets. In manual mode, present the graph for human review
 
 On GitHub, leave `native_dependencies` enabled. Publication adds each
 `blocked_by` link and reads the dependencies back; the ticket counts as
-published only when those links are present.  Tell the person the edges are
+published only when those links are present. Tell the person the edges are
 those GitHub blocked-by links.
 
 Keep the graph revision inside the approval tool call.
@@ -188,7 +189,7 @@ stop there:
    `wording:<ticket>:ac-N`), a new graph (`reformulate`, `split`), a new grill question on
    the spec's run (`new_grill_question`) or a new verification (a check with no
    probabilities), which `TicketClient.recheck_wording` makes: run it first, and stop
-   only on `wording_check_unscored`.
+   only on `wording_check_unscored` ([other answers](references/residual-acceptance.md)).
 3. Offer only the exits inside Specgate: the person's approval with that residual, an
    explicit continuation through `tickets_research_extend`, or the person's `spec_reject`
    when the approved spec itself must change.

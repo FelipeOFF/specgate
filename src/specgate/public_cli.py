@@ -16,6 +16,7 @@ from specgate import flow, research, research_filter
 from specgate.client import ReviewRequest
 from specgate.product import (
     LEGACY_SKILL_SOURCE_ENV,
+    SKILL,
     SKILL_SOURCE_ENV,
     mcp_api_key,
     packaged_skills,
@@ -60,6 +61,7 @@ _ACTION_LABELS = {
     "absent": "ausente",
 }
 _MANUAL_CONNECTOR = "conector manual"
+_WROTE = frozenset({"created", "updated"})
 
 
 def public_harness_setup_hints() -> dict[str, str]:
@@ -119,14 +121,38 @@ def _harness_line(name: str, report: object) -> str:
 def _install_action(report: object) -> str:
     if not isinstance(report, dict):
         return "ok"
-    nested = report.get("adapter") or report.get("codex")
-    source = nested if isinstance(nested, dict) else report
-    if isinstance(source, dict):
-        for key in ("mcp", "skill", "bundle"):
-            value = source.get(key)
-            if value in _ACTION_LABELS:
-                return _ACTION_LABELS[value]
+    source = _source(report)
+    for key in ("mcp", "skill", "bundle"):
+        value = source.get(key)
+        if value in _ACTION_LABELS:
+            # An entry that stayed is no harness that stayed: its hooks or skills may have changed.
+            if value == "unchanged" and _wrote(report):
+                return _ACTION_LABELS["updated"]
+            return _ACTION_LABELS[value]
     return "ok"
+
+
+def _source(report: dict[str, Any]) -> dict[str, Any]:
+    nested = report.get("adapter") or report.get("codex")
+    return nested if isinstance(nested, dict) else report
+
+
+def _written_skills(report: object) -> list[str]:
+    """The skills an install wrote in one harness, by name: its own and the workflow ones."""
+    if not isinstance(report, dict):
+        return []
+    written = [SKILL] if _source(report).get("skill") in _WROTE else []
+    workflows = report.get("workflows")
+    if isinstance(workflows, dict):
+        written += [name for name, status in workflows.items() if status in _WROTE]
+    return written
+
+
+def _wrote(report: dict[str, Any]) -> bool:
+    """Whether an install wrote anything in one harness: an entry, a hook or a skill."""
+    source = _source(report)
+    statuses = (source.get("mcp"), source.get("bundle"), source.get("hooks"), report.get("hooks"))
+    return bool(_written_skills(report)) or any(status in _WROTE for status in statuses)
 
 
 def _append_session_env(text: str, result: Mapping[str, Any]) -> str:
@@ -178,8 +204,27 @@ def _format_uninstall(result: Mapping[str, Any]) -> str:
 
 
 def _format_update(result: Mapping[str, Any]) -> str:
-    text = _format_install(result)
-    return text.replace("instalado", "atualizado", 1)
+    """What the update changed: the client, and in each harness what it wrote."""
+    harnesses = result.get("harnesses")
+    harnesses = harnesses if isinstance(harnesses, dict) else {}
+    rows = []
+    for name in _ordered_harnesses(harnesses):
+        written = _written_skills(harnesses[name])
+        detail = f"; skills criadas ou atualizadas: {', '.join(written)}" if written else ""
+        rows.append(_status_row(name, _harness_line(name, harnesses[name]) + detail))
+    package = result.get("package")
+    if isinstance(package, dict):
+        before, after = (str(package.get(key, ""))[:7] for key in ("from", "to"))
+        client = (
+            [f"Cliente atualizado de {before} para {after}."]
+            if result.get("package_replaced") is True
+            else [f"Cliente já estava em {after}."]
+        )
+    else:
+        client = []
+    return _append_session_env(
+        "\n".join(["Specgate atualizado.", *client, "", *rows]), result
+    )
 
 
 def _format_smoke(result: Mapping[str, Any]) -> str:

@@ -45,3 +45,22 @@ When the `fidelity:decision-<slug>` claim of that decision is also weak and
 names no action, the research ends in `no_action_available` (to `human_review` even with a
 delegation); when it is strong, the gap stays on the spec, the research ends with no handoff
 and the spec stays in review.
+
+## Answers of the renota
+
+`SpecClient.recheck_wording` stores nothing in three answers:
+
+- `wording_check_unscored`: no check it asked again came back with a score. If the transport
+  failed, run it again once the transport is back; if the host answered with no score (the
+  mock, an error of the host or of the provider), the same answer comes back while that cause
+  lasts: stop at the dead end, and the person decides how the spec goes on.
+- `wording_recheck_unavailable`: it sent nothing, because there is no stored spec, no check of
+  it left without a score, or a research cycle pending. Finish a pending cycle through
+  `SpecClient.research_spec` with its key, then run the renota again if the gap is still there;
+  otherwise read `spec_get` again and follow the `review_exits` of each blocking gap.
+- `research_changed`: it sent nothing, because a source the stored verification read (a project
+  file, or the admitted research) changed or is gone, so its verdicts no longer describe what Jev
+  would read. Put back a project file changed by mistake and run the renota again; otherwise
+  verify the spec again through `SpecClient.synthesize` (or `specgate flow`). That is a new
+  evaluation: it counts a rejection when it leaves a claim weak, and after the third rejection
+  the person decides.

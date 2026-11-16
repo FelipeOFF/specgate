@@ -7,8 +7,11 @@ description: Judge a ticket's acceptance criteria against worktree evidence thro
 
 After the ticket's declared checks pass and before a draft pull request, treat
 each acceptance criterion as a claim. Do not ask Jev to browse the repository.
-Pack deterministic evidence from the worktree: tracked files, check results,
-commit, and ticket behavior. Keep the packet inside the 64 KB evidence limit.
+Pack deterministic evidence from the worktree commit: the diff against the base
+of the delivery, the files it touches as committed, check results, and ticket
+behavior, never the whole repository or uncommitted edits. Keep the packet inside
+the 64 KB evidence limit: what does not fit goes by name, and past 4 KB of
+names, by count.
 
 Call `jev_verify` with stable claim IDs `{ticket-id}:ac-{n}`. The criteria passed
 the `jev_check` wording check when the graph was verified: do not reword or split
