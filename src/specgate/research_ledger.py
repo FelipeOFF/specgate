@@ -6,7 +6,8 @@ from specgate.payload import CODE
 
 # A cycle that stopped on the host or the provider judged no evidence.
 OPERATIONAL = frozenset({"operational_unavailable", "topic_selection_required"})
-# The research closed its gate on the new evidence it collected (`research_cycle.admit`).
+# The host did not admit the new evidence an attempt collected: a gate that judged it stayed
+# closed, or its binding failed.
 GATE_CLOSED = "evidence_gate_closed"
 
 

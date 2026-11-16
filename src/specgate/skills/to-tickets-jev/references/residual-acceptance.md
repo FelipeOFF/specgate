@@ -40,3 +40,22 @@ check with no probabilities, such as a transport error (`residual_wording_unscor
 the graph again through the client). `TicketClient.recheck_wording` makes that verification from
 the stored graph: it asks again only the checks with no probabilities, reuses every verdict and
 every other check, and the host counts no rejection for it, even after the third. Only a human origin accepts it, as with the claims.
+
+## Answers of the renota
+
+`TicketClient.recheck_wording` stores nothing in three answers:
+
+- `wording_check_unscored`: no check it asked again came back with a score. If the transport
+  failed, run it again once the transport is back; if the host answered with no score (the
+  mock, an error of the host or of the provider), the same answer comes back while that cause
+  lasts: stop at the dead end, and the person decides how the graph goes on.
+- `wording_recheck_unavailable`: it sent nothing, because there is no stored graph, no check of
+  it left without a score, or a research cycle pending. Finish a pending cycle through
+  `TicketClient.research_tickets` with its key, then run the renota again if the gap is still there;
+  otherwise read `tickets_get` again and follow the `review_exits` of each blocking gap.
+- `research_changed`: it sent nothing, because a source the stored verification read (a project
+  file, or the admitted research) changed or is gone, so its verdicts no longer describe what Jev
+  would read. Put back a project file changed by mistake and run the renota again; otherwise
+  verify the graph again through `TicketClient.synthesize` (or `specgate flow`). That is a new
+  evaluation: it counts a rejection when it leaves a claim weak, and after the third rejection
+  the person decides.

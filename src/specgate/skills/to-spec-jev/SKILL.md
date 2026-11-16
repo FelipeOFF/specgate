@@ -60,7 +60,8 @@ defect above 0.80 names yours (`reformulate`, `split` or `new_grill_question`), 
 client already refuses that draft as `wording_rejected` with `gate_passed: false`, answered
 as any wording defect; with none above 0.80 the only action is the maintainer's
 `accept_wording_residual`; a check with no probabilities needs a new verification
-(`new_verification`), which `SpecClient.recheck_wording` makes at no cost.
+(`new_verification`), which `SpecClient.recheck_wording` makes (a new `jev_check`, no
+rejection counted).
 [The residual acceptance](references/residual-acceptance.md) says where its research ends.
 The check is an uncertainty filter with no measured accuracy. Jev only judges: never ask it
 to write, rewrite or split a decision.
@@ -185,7 +186,7 @@ clears it, with an adapter), stop there:
    as `wording:decision-<slug>`), a new revision (`reformulate`, `split`), the grill of this
    run (`new_grill_question`) or a new verification (a check with no probabilities),
    which `SpecClient.recheck_wording` makes: run it first, and stop only on
-   `wording_check_unscored`.
+   `wording_check_unscored` ([other answers](references/residual-acceptance.md)).
 3. Offer only the exits inside Specgate: the person's approval with that residual
    ([the residual acceptance](references/residual-acceptance.md)), or the person's rejection
    through `spec_reject`, which reopens the grill.
