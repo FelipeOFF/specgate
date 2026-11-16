@@ -42,8 +42,9 @@ fluxo.
 `jev_equivalence` confere uma divisão ou reformulação contra o original. As duas só
 julgam: o Jev não gera, reescreve nem divide texto, e a checagem é um filtro de
 incerteza, sem acurácia medida. A recusa tipada (`action=agent_revision`) é do agente,
-que escolhe só entre as `next_actions` e registra o motivo; `grill-with-jev`,
-`to-spec-jev` e `to-tickets-jev` dizem como.
+que escolhe só entre as `next_actions` e registra o motivo; `to-spec-jev` e
+`to-tickets-jev` dizem como. O grill não passa pelo Jev: `grill-with-jev` conduz a
+`grill-with-docs` com a pessoa, que decide cada pergunta, e só grava as decisões no host.
 
 No Grok Bot, esta é uma skill privada cooperativa: anexe também o Custom MCP
 connector `specgate` e consulte `jev_decide` antes de encaminhar uma pergunta

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import os
 import re
 import subprocess
+import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -78,10 +80,19 @@ def _venv_roots() -> list[Path]:
     home = os.environ.get("PIPX_HOME")
     if home:
         return [Path(home) / "venvs"]
-    return [
-        Path.home() / ".local/pipx/venvs",
-        Path.home() / ".local/share/pipx/venvs",
-    ]
+    # `specgate update` runs in the pipx venv of the client, so the parent of that venv is the
+    # folder pipx chose. On macOS pipx keeps `~/Library/Application Support/pipx` while it exists
+    # from an older pipx, and the fixed paths below would miss it.
+    return list(
+        dict.fromkeys(
+            [
+                Path(sys.prefix).parent,
+                Path.home() / ".local/pipx/venvs",
+                Path.home() / ".local/share/pipx/venvs",
+                Path.home() / "Library/Application Support/pipx/venvs",
+            ]
+        )
+    )
 
 
 def _pipx_python(package: str) -> Path | None:
@@ -111,6 +122,36 @@ def _commit_from_direct_url(raw: str) -> str:
     return commit
 
 
+def describe_version(name: str, version: str, direct_url: str | None) -> str:
+    """The line `specgate --version` prints: package, version and the git commit it came from.
+
+    The version in pyproject does not change between exports, so the commit pipx recorded
+    is what tells one install from another.
+    """
+    label = f"{name} {version}"
+    try:
+        commit = _commit_from_direct_url(direct_url or "")
+    except ValueError:
+        return label
+    return f"{label} (commit {commit[:7]})"
+
+
+def client_version(package: str = PUBLIC_PACKAGE) -> str:
+    """Describe the client that is running, read from its own installed metadata."""
+    names = importlib.metadata.packages_distributions().get("specgate", [])
+    for name in dict.fromkeys((package, *names)):
+        try:
+            distribution = importlib.metadata.distribution(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+        return describe_version(
+            distribution.metadata["Name"],
+            distribution.version,
+            distribution.read_text("direct_url.json"),
+        )
+    return "specgate (versão desconhecida)"
+
+
 def _commit_from_ls_remote(stdout: str) -> str:
     lines = [line for line in stdout.splitlines() if line.strip()]
     if len(lines) != 1:
@@ -129,7 +170,11 @@ def installed_package_commit(
     """Return the VCS commit pipx recorded for the installed public client."""
     python = _pipx_python(package)
     if python is None:
-        raise ValueError("Installed package commit is unavailable.")
+        searched = ", ".join(str(root) for root in _venv_roots())
+        raise ValueError(
+            f"Installed package commit is unavailable: no pipx venv of {package} in {searched}."
+            " Set PIPX_VENV_DIR to the output of `pipx environment --value PIPX_LOCAL_VENVS`."
+        )
     return _commit_from_direct_url(_query(python, package, spawn))
 
 
@@ -211,7 +256,8 @@ def _read_commits(probes: PackageProbes) -> tuple[str, str]:
         installed = probes.read_installed()
         remote = probes.read_remote()
     except (OSError, ValueError, subprocess.SubprocessError) as error:
-        raise ValueError(_READ_ERROR) from error
+        # The person sees only this message: it names which read failed and why.
+        raise ValueError(f"{_READ_ERROR} {error}".strip()) from error
     if _COMMIT.fullmatch(installed) is None or _COMMIT.fullmatch(remote) is None:
         raise ValueError(_READ_ERROR)
     return installed, remote

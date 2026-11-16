@@ -42,7 +42,7 @@ A coding agent can write a spec, open tickets and implement a slice without ever
 This package installs skills and an MCP client into the agents you already use. The harness keeps writing. [Jev](https://docs.typesafe.ai/concepts/system-one), TypeSafe's decision model, answers a typed question about the evidence you authorized: a choice, a claim, a screen, a ranking. The MCP call stays attached to the turn. There is no daemon, no callback later, no merge from a model.
 
 - One install for every harness it finds. `--harness` selects; `--yes` takes all of them.
-- Skills ship in English and run the same flow everywhere: `triage-jev` → `grill-with-jev` (with `research-with-jev` and `research-filter-jev` for a gap) → `to-spec-jev` → `to-tickets-jev` → `implement-spec-jev` → `verify-spec-jev`. `deliver-with-jev` runs `grill-with-jev`, `to-spec-jev`, `to-tickets-jev` and `implement-spec-jev` in one invocation, resuming from the state the host keeps. `iterate-with-jev` sits beside that flow: a `/iterate` comment is judged before the pull request branch moves.
+- Skills ship in English and run the same flow everywhere: `triage-jev` → `grill-with-jev` (Matt Pocock's `grill-with-docs`, where you make every decision) → `to-spec-jev` → `to-tickets-jev` → `implement-spec-jev` → `verify-spec-jev`. `deliver-with-jev` runs `grill-with-jev`, `to-spec-jev`, `to-tickets-jev` and `implement-spec-jev` in one invocation, resuming from the state the host keeps. `iterate-with-jev` sits beside that flow: a `/iterate` comment is judged before the pull request branch moves.
 - Your MCP host, your API key. Model keys stay on the server. This package never logs the credential.
 - If the MCP is down, the harness still runs. The decision stays in human review. One warning per session.
 
@@ -63,7 +63,7 @@ That is what makes it reasonable to put a decision on every grill question, ever
 3. Run `specgate doctor --project .` in the repo you will work in. It prints one line per harness. Add `--json` for the full report. Doctor checks runtime, handshake, auth and the tool catalog. It does not start a model turn.
 4. Open the harness. Use `grill-with-jev` on a real scope question.
 
-A question Jev can close from `CONTEXT.md` and the authorized roots comes back as a typed result. A business choice, an authorization, or a gap after three evidence retries stays with you.
+The grill runs Matt Pocock's `grill-with-docs` (`grilling` and `domain-modeling` from `mattpocock/skills`): you answer each question, and the agent records your decisions in the host for the spec. Jev starts at the spec: it checks each decision's wording and verifies the spec and the tickets against the evidence.
 
 ## Agents
 
@@ -88,7 +88,7 @@ Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `D
 | Skill | What it does |
 | --- | --- |
 | `triage-jev` | Classify a tracker issue. Labels change only after the maintainer confirms. |
-| `grill-with-jev` | Close the scope. Each question and option is checked with `jev_check` before Jev decides. A rewording or split that `jev_equivalence` accepts counts as new content; up to four evaluations per question, and the third low-confidence rejection goes to a person. |
+| `grill-with-jev` | Close the scope with Matt Pocock's `grill-with-docs`: you make every decision, and `CONTEXT.md` and ADRs are written as they settle. The skill then records each decision in the host as an open question, which never reaches Jev, so the spec can cite it. Needs `grill-with-docs`, `grilling` and `domain-modeling` from `mattpocock/skills`. |
 | `research-with-jev` | Collect evidence for one gap from authorized sources, after Jev picks the topic. |
 | `research-filter-jev` | Filter that packet into relevant, contradictory, rejected and repeated evidence. |
 | `to-spec-jev` | Authorized research and a versioned spec from one grill run. Each decision is checked with `jev_check` before `jev_verify` covers the claims; a typed refusal names the actions allowed. Publishes only through Specgate; a spec left in review with no action of the agent stays unpublished. |
@@ -110,6 +110,7 @@ Original binaries stay on `PATH`. Wrappers inject `SPECGATE_MCP_API_KEY` (and `D
 | `specgate flow` | Resume a delivery from grill to draft pull requests under the standing grant or an explicit draft authorization. No manifest needed |
 | `specgate update` | Explicit. Reinstall the client when public master moved, then let the installed package refresh managed skills, hooks and wrappers; says what changed |
 | `specgate uninstall` | Remove plugin-managed files only |
+| `specgate --version` | Package, version and the git commit pipx installed. The version stays the same between exports, so compare the commit with public master |
 
 `specgate flow request.json --host https://YOUR_MCP/mcp --adapter module:factory --authorize-jev` resumes a delivery from the state the host keeps: grill, research, spec, tickets and implementation, ending at draft pull requests. It does not need a calibration manifest. A stage advances only when its tool's predicate holds on a response whose `gate.basis` and binding (policy and recipe revision, tool, request and context revisions, provider and resolved model) this client checked against the request it sent; a response without `basis`, or with a field that differs, stays in review. External effects need the standing grant from `specgate setup`, with one exception: `--authorize-drafts` is an explicit human authorization to open the ticket draft pull requests. With it, opening a draft does not consult the grant (`draft_pr`) and the ticket verification skips the policy's automatic predicate, so pass it only when the person running the command authorizes those drafts. Spec and tickets still need the grant or a human approval of the exact revision. With or without the flag, the command never merges, deploys or force-pushes. The adapter is an installed Python module that supplies the harness callbacks, the trackers and the pull request publisher; it imports the models from `grill_contracts`, `spec_contracts`, `ticket_contracts` and `implementation_contracts`, because `grill`, `spec` and `tickets` exist only in the host. The command reads the key from `SPECGATE_MCP_API_KEY`.
 
