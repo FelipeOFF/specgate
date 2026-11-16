@@ -34,7 +34,7 @@ QUESTIONS = "spec:"
 RESIDUAL_RULE = {
     "name": "human_accept_residual",
     "accepts": "a claim of the current spec revision whose evaluation is verified, below the threshold",
-    "requires": "no automatic research cycle left (attempt limit, shared budget or stagnation, with or without a calibration manifest) and a human origin",
+    "requires": "no automatic research cycle left (attempt limit, shared budget, stagnation or a gate the Jev closed on the new evidence, with or without a calibration manifest) and a human origin",
     "never": "a contradicted or unsupported evaluation, a claim a research source contradicted, or a structural gap of the verification",
     "wording": "the wording of a decision whose check stayed outside the gate with the five probabilities kept and none above 0.80, listed as wording:<target> with the verdict review",
     "ends": "with any new revision of the spec or, while the spec is in review, a research cycle that reopens; once the publication starts and the spec is out of the review the acceptance holds",
@@ -78,7 +78,10 @@ def next_cycle(
     `allowed` are the `next_actions` of the weak claims; only one with `research` is researched.
     """
     return residual.next_cycle(
-        claim_ids, lambda claim_id: research_stop(state, claim_id, retry=True), allowed
+        claim_ids,
+        lambda claim_id: research_stop(state, claim_id, retry=True),
+        allowed,
+        ends=lambda claim_id, reason: residual.ends_cycles(state, _question(claim_id), reason),
     )
 
 

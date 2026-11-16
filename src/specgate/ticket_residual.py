@@ -10,10 +10,10 @@ list.
 
 The automatic research runs on every host: with no calibration manifest it
 admits evidence by the confidence policy, so the cycles of a claim end only as
-the research ledger records (attempt limit, shared budget or stagnation), never
-for want of a manifest. Once the publication starts, no cycle runs on a graph
-that left the review, so the acceptance holds whatever the ledger or the host's
-gates become.
+the research ledger records (attempt limit, shared budget, stagnation, or a gate
+the Jev closed on the new evidence it judged), never for want of a manifest. Once
+the publication starts, no cycle runs on a graph that left the review, so the
+acceptance holds whatever the ledger or the host's gates become.
 
 The list also accepts the wording of an acceptance criterion (`wording:<ticket>:ac-N`) whose
 check stayed outside the gate with no probability above the cutoff (ADR 0036).
@@ -38,7 +38,7 @@ from specgate.ticket_claims import (
 RESIDUAL_RULE = {
     "name": "human_accept_residual",
     "accepts": "a claim of the current graph whose every evaluation is verified, below the threshold",
-    "requires": "the symmetric confirmation for a claim near the threshold, no automatic research cycle left (attempt limit, shared budget or stagnation, with or without a calibration manifest), and a human origin",
+    "requires": "the symmetric confirmation for a claim near the threshold, no automatic research cycle left (attempt limit, shared budget, stagnation or a gate the Jev closed on the new evidence, with or without a calibration manifest), and a human origin",
     "never": "a contradicted or unsupported evaluation, a claim a research source contradicted, or a structural gap of the verification",
     "wording": "the wording of an acceptance criterion whose check stayed outside the gate with the five probabilities kept and none above 0.80, listed as wording:<target> with the verdict review",
     "ends": "with any new revision of the graph, a change of the threshold that leaves the claim unconfirmed, or, before the publication starts, an authorized continuation that reopens the cycles; once the publication starts the acceptance holds",
@@ -82,7 +82,10 @@ def next_cycle(
     `allowed` are the `next_actions` of the weak claims; only one with `research` is researched.
     """
     return residual.next_cycle(
-        claim_ids, lambda claim_id: research_stop(state, claim_id, retry=True), allowed
+        claim_ids,
+        lambda claim_id: research_stop(state, claim_id, retry=True),
+        allowed,
+        ends=lambda claim_id, reason: residual.ends_cycles(state, _question(claim_id), reason),
     )
 
 
