@@ -1,8 +1,11 @@
 # Residual acceptance
 
 The consolidated review may record a human residual. When the automatic cycles
-of a claim have ended (its attempts, the shared budget or stagnation; never an
-operational stop, a contradicting source or a cycle still reserved),
+of a claim have ended (its attempts, the shared budget, stagnation, or an
+`evidence_gate_closed` where the Jev judged the new source and its gate refused it;
+never an operational stop, a contradicting source, a cycle still reserved, or an
+`evidence_gate_closed` whose Jev gates passed and whose binding failed, as between a
+client and a host of different versions),
 the maintainer may accept a spec whose remaining gaps are claims still `verified`
 below the threshold. `SpecClient.research_spec` moves on to the next weak claim
 whose cycles have not ended, so a spec with several residual claims exhausts each

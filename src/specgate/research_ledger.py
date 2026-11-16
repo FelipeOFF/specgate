@@ -6,6 +6,8 @@ from specgate.payload import CODE
 
 # A cycle that stopped on the host or the provider judged no evidence.
 OPERATIONAL = frozenset({"operational_unavailable", "topic_selection_required"})
+# The research closed its gate on the new evidence it collected (`research_cycle.admit`).
+GATE_CLOSED = "evidence_gate_closed"
 
 
 def counted(state: dict[str, Any], question_id: str | None = None) -> list[dict[str, Any]]:

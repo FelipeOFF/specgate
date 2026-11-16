@@ -1,8 +1,11 @@
 # Residual acceptance
 
-When the automatic cycles of a claim have ended (its attempts, the shared budget
-or stagnation, with or without a calibration manifest; never an operational stop, an
-invalid or non-applicable manifest, a contradicting source or a cycle still reserved), the maintainer may
+When the automatic cycles of a claim have ended (its attempts, the shared budget,
+stagnation, or an `evidence_gate_closed` where the Jev judged the new source and its gate
+refused it, with or without a calibration manifest; never an operational stop, an invalid
+or non-applicable manifest, a contradicting source, a cycle still reserved, or an
+`evidence_gate_closed` whose Jev gates passed and whose binding failed, as between a
+client and a host of different versions), the maintainer may
 accept a graph whose remaining gaps are
 verified claims below the threshold. `research_tickets` moves on to the next weak
 claim whose cycles have not ended, so a graph with several residual claims

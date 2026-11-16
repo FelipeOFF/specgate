@@ -21,8 +21,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from specgate import lineage_budget
 from specgate.claim_wording import REVIEW, judge, present, review_probabilities
+from specgate.gate_policy import BASIS_MANIFEST, BASIS_POLICY
 from specgate.grill_contracts import GrillError
-from specgate.research_ledger import counted, exhausted, stop
+from specgate.research_ledger import GATE_CLOSED, counted, exhausted, stop
 from specgate.shared.domain.inputs import checked_text
 
 
@@ -60,6 +61,33 @@ ENDED = frozenset(
         lineage_budget.WORDING_RESIDUAL,
     }
 )
+
+
+def ends_cycles(state: dict[str, Any], question: str, reason: str | None) -> bool:
+    """Whether the stop `reason` of a question ends its automatic cycles (ADR 0041).
+
+    The ends in ENDED do. A closed gate does too when the Jev judged the new evidence and
+    refused it: a source the closing attempt selected has a real Screen or Verify whose gate,
+    from a recognized authority, did not pass. That is no useful new evidence, as a stagnation
+    is. Read from the attempts, so a run that recorded the stop before this rule is covered. A
+    gate closed with the Jev's gates passed is the binding that failed (a client and a host of
+    different versions) and keeps the cycles open, as does an extension, which erases the stop.
+    """
+    if reason != GATE_CLOSED:
+        return reason in ENDED
+    return any(
+        isinstance(result, dict)
+        and result.get("mode") == "real"
+        and isinstance(result.get("gate"), dict)
+        and result["gate"].get("passed") is False
+        and result["gate"].get("basis") in {BASIS_MANIFEST, BASIS_POLICY}
+        for row in counted(state, question)[-1:]
+        for item in row.get("selected", [])
+        if isinstance(item.get("jev"), dict)
+        for result in (item["jev"].get("screen"), item["jev"].get("verify"))
+    )
+
+
 # An artifact whose publication started has no cycle left to run. The value keeps the
 # name this end had before the research ran without a manifest, so the records of
 # the publications already started still read the same.
@@ -140,14 +168,17 @@ def next_cycle(
     claim_ids: list[str],
     stop_of: Callable[[str], str | None],
     allowed: Mapping[str, list[str]] | None = None,
+    *,
+    ends: Callable[[str, str], bool],
 ) -> tuple[str, str | None]:
     """The claim to research next and why it cannot be: (claim, None) while one can.
 
-    `stop_of` says why no cycle can run for a claim. A claim whose cycles ended is
-    skipped, so every residual claim runs its own. A stop that needs a person halts
-    the research wherever the claim sits; when every claim ended, the first one
-    reports its reason. A claim that stopped on an operational error is researched
-    again, as the error spent no cycle.
+    `stop_of` says why no cycle can run for a claim, and `ends` whether that stop ends its
+    cycles: the artifacts pass `ends_cycles` over their ledger. A claim whose cycles ended
+    is skipped, so every residual claim runs its own. A stop that needs a person halts the
+    research wherever the claim sits; when every claim ended, the first one reports its
+    reason. A claim that stopped on an operational error is researched again, as the error
+    spent no cycle.
 
     `allowed` are the actions the code lets the agent take on each weak claim: only a claim
     with `research` among them is researched, and the others are skipped, because the cycle
@@ -175,7 +206,7 @@ def next_cycle(
             else:
                 unattended = unattended or (claim_id, lineage_budget.NO_ACTION)
             continue
-        if reason not in ENDED:
+        if not ends(claim_id, reason):
             return claim_id, reason
         ended = ended or (claim_id, reason)
     return ended or unattended or waiting or (claim_ids[0], None)
@@ -219,14 +250,14 @@ def cycles(
 ) -> dict[str, Any] | None:
     """How the automatic research cycles of a question ended; None while one remains.
 
-    The ledger names the end. An operational stop it recorded keeps the cycles
-    open. Once the publication started no cycle runs, so a question the ledger
-    never ended counts as ended by the publication. `own` is the prefix of the
-    questions of the artifact; the default owns every question, so any reserved
-    cycle keeps them open. A claim `reviewed` has an action of the maintainer as its
-    only one, so the research never opens a cycle for it and the review is where its
-    cycles end: `reviewed` names that end (`maintainer_end`), and True is the review of
-    its derivation.
+    The ledger names the end, and `ends_cycles` says whether it is one. An operational
+    stop it recorded keeps the cycles open. Once the publication started no cycle
+    runs, so a question the ledger never ended counts as ended by the publication.
+    `own` is the prefix of the questions of the artifact; the default owns every
+    question, so any reserved cycle keeps them open. A claim `reviewed` has an action
+    of the maintainer as its only one, so the research never opens a cycle for it and
+    the review is where its cycles end: `reviewed` names that end (`maintainer_end`),
+    and True is the review of its derivation.
     """
     if reserved(state, own, publication_started=publication_started):
         return None
@@ -235,7 +266,7 @@ def cycles(
         reason = PUBLICATION_STARTED
     if reason is None and reviewed:
         reason = reviewed if isinstance(reviewed, str) else lineage_budget.DERIVATION_REVIEW
-    if reason not in {*ENDED, PUBLICATION_STARTED}:
+    if reason != PUBLICATION_STARTED and not ends_cycles(state, question, reason):
         return None
     return {
         "exhausted": reason,
